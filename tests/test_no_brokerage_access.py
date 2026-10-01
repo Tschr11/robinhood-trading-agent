@@ -24,8 +24,9 @@ CODE_FOLDERS = ["src", "config"]
 
 # Every module the project code is allowed to import. None of these can
 # open a network connection. (sqlite3 only reads and writes a local file.)
-ALLOWED_IMPORTS = {"math", "dataclasses", "datetime", "csv", "os", "random",
-                   "sqlite3", "contextlib", "warnings", "config", "src"}
+# `random` is deliberately NOT allowed: the agent must never make up prices.
+ALLOWED_IMPORTS = {"math", "dataclasses", "datetime", "csv", "os", "abc",
+                   "enum", "sqlite3", "contextlib", "warnings", "config", "src"}
 
 FORBIDDEN_WORDS = ["api_key", "apikey", "secret", "password", "token",
                    "credential", "oauth", "login", "robin_stocks"]

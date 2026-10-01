@@ -1,23 +1,38 @@
 """
-main.py - The starting point. Runs one simulated decision cycle.
+main.py - The starting point. Runs one paper-trading decision cycle.
 
 Run from the project root with:
     python -m src.main
 
-Flow: get prices -> strategy suggests -> risk manager checks
+Flow: load historical candles -> strategy suggests -> risk manager checks
       -> paper trader simulates -> journal records.
+
+Prices come from your own CSV files in data/market/ (see README.md).
+If a file is missing or invalid, that symbol is skipped - the agent never
+makes up prices. These are HISTORICAL prices, not live market quotes.
 """
 
 from config import settings
-from src import journal, market_data, strategy
+from src import journal, strategy
+from src.market_data import CSVHistoricalProvider, MarketDataError
 from src.paper_trader import PaperTrader
 
 
-def run_once(trader: PaperTrader) -> None:
+def run_once(trader: PaperTrader, provider=None) -> None:
+    provider = provider or CSVHistoricalProvider()
     for symbol in settings.WATCHLIST:
-        prices = market_data.get_recent_prices(symbol)
-        price = prices[-1]
+        try:
+            data = provider.get_candles(symbol, min_candles=5)
+        except MarketDataError as error:
+            journal.log_decision(symbol, "NONE", "SKIPPED", 0.0, "",
+                                 f"No usable market data: {error}")
+            print(f"{symbol}: SKIPPED - no usable market data. {error}")
+            continue
+
+        prices = data.closes[-20:]
+        price = data.latest_close
         signal, reason = strategy.generate_signal(prices)
+        reason = f"{reason} ({data.kind.value} data from {data.source})"
 
         if signal == "BUY":
             # The paper trader asks the risk manager and writes the journal.

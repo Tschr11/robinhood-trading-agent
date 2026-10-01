@@ -31,6 +31,10 @@ ALLOW_FRACTIONAL_SHARES = True # needed to trade with a small balance
 
 # --- Files -------------------------------------------------------------------
 DATA_DIR = "data"
+# Historical candles, one CSV per symbol: data/market/SPY.csv
+# (columns: timestamp,open,high,low,close,volume). You supply these files;
+# the agent never invents prices.
+MARKET_DATA_DIR = "data/market"
 LOG_DIR = "logs"
 JOURNAL_FILE = "logs/trade_journal.csv"
 # The saved paper account (cash, positions, P&L). Delete this file to start

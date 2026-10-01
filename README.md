@@ -28,11 +28,16 @@ robinhood-trading-agent/
 ├── .gitignore           Files Git should not track (secrets, logs, data)
 ├── config/
 │   └── settings.py      All goals and risk rules in one place
-├── data/                paper_account.db - the saved paper account (git-ignored)
+├── data/                paper_account.db + market/<SYMBOL>.csv (git-ignored)
 ├── logs/                Trade journal and run logs
 ├── src/
 │   ├── main.py          Runs one decision cycle, start to finish
-│   ├── market_data.py   Provides prices (simulated for now)
+│   ├── market_data/     Market Data Engine
+│   │   ├── candles.py       Candle (OHLCV), DataKind (historical/live), errors
+│   │   ├── validation.py    Rejects bad candles - never repairs them
+│   │   ├── dataset.py       MarketDataSet: validated + labelled candles
+│   │   ├── indicators.py    SMA 20/50, RSI 14, VWAP, average volume
+│   │   └── providers.py     Provider interface + offline CSV provider
 │   ├── strategy.py      Suggests BUY / SELL / HOLD with a reason
 │   ├── risk_manager.py  Approves or blocks each trade against the rules
 │   ├── paper_trader.py  Simulated account: buys, sells, P&L, daily losses
@@ -44,6 +49,8 @@ robinhood-trading-agent/
     ├── test_paper_trader.py             Buys, sells, P&L, daily losses, journal
     ├── test_exits.py                    Automatic stop-loss / take-profit exits
     ├── test_persistence.py              Restarts, saved trades, crash safety
+    ├── test_market_data.py              Validation, indicators, providers
+    ├── market_fixtures.py               Locally generated test candles
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
 
@@ -51,14 +58,30 @@ robinhood-trading-agent/
 
 ```
 market_data -> strategy -> risk_manager -> paper_trader -> journal
- (prices)     (suggest)    (allow/block)    (simulate)     (record)
+ (candles)    (suggest)    (allow/block)    (simulate)     (record)
+
+The paper trader never imports market_data. Prices reach it as a plain
+dict such as {"SPY": 494.00}, built by market_data.latest_prices().
 ```
 
 - **`config/settings.py`** - The rulebook. Starting capital, weekly deposit,
   watchlist, and risk limits (max risk per trade, max daily loss, max trades per
   day, stop-loss, take-profit). `PAPER_TRADING = True` is the safety switch.
-- **`src/market_data.py`** - Supplies prices. Right now it generates random
-  prices so everything works offline.
+- **`src/market_data/`** - The Market Data Engine (built and tested):
+  - **Candles (OHLCV):** timestamp, open, high, low, close, volume
+  - **Validation** rejects missing values, NaN/infinity, zero or negative
+    prices, negative volume, impossible bars (e.g. high below close),
+    duplicate or out-of-order timestamps, timestamps without a time zone,
+    and too few candles. Every problem is listed; nothing is ever filled in
+  - **Labels:** every dataset and indicator result says whether it is
+    `historical` or `live` data and where it came from (`source`).
+    `require_kind(DataKind.LIVE)` refuses the wrong kind
+  - **Indicators:** SMA 20, SMA 50, RSI 14 (Wilder), VWAP (latest session),
+    20-candle average volume. Too little data raises an error - no guesses
+  - **Providers:** one interface (`MarketDataProvider`), so the data source
+    can change later. Validation is built into the interface, so no provider
+    can skip it. Included: `CSVHistoricalProvider` (your CSV files) and
+    `InMemoryProvider` (tests/backtests). There is no live provider yet
 - **`src/strategy.py`** - A simple placeholder strategy: buy when the price is
   above its recent average. It only *suggests* trades.
 - **`src/risk_manager.py`** - The safety gate (fully built and tested). Every
@@ -106,6 +129,27 @@ The skeleton uses only the Python standard library. From the project root:
 ```
 python -m src.main
 ```
+
+## Market data files
+
+The agent **never makes up prices**. It reads historical candles from CSV
+files that you provide, one per symbol, in `data/market/`:
+
+```
+data/market/SPY.csv
+timestamp,open,high,low,close,volume
+2026-01-05T09:30:00-05:00,500.10,500.80,499.90,500.50,120000
+2026-01-05T09:35:00-05:00,500.50,501.20,500.30,501.00,95000
+```
+
+- Timestamps must include a time zone (`-05:00` or `Z`) and go oldest first.
+- Use the exchange's local time zone so VWAP resets on the right day.
+- If a file is missing or has any invalid row, that symbol is skipped and
+  the reason is written to the journal. Nothing is substituted.
+- Indicators need at least 50 candles (for SMA 50).
+
+**Historical is not live.** CSV data is labelled `historical`. Prices in a
+file can be minutes or years old; never treat them as current market quotes.
 
 ## Your saved paper account
 
