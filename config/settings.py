@@ -52,6 +52,13 @@ RSI_EXIT = 75.0
 # Live data older than this is treated as unusable (HOLD, never trade).
 LIVE_DATA_MAX_AGE_SECONDS = 120
 
+# --- Backtesting (see src/backtest.py and README.md) -------------------------
+# Costs used when replaying history. Real costs vary; set these to match your
+# own expectations. Commission is per order (entry and exit each pay it).
+BACKTEST_COMMISSION_PER_TRADE = 0.00   # dollars per order
+BACKTEST_SLIPPAGE_PCT = 0.0005         # 0.05% worse fill on market orders
+BACKTEST_LOOKBACK_CANDLES = 500        # candles shown to the strategy each step
+
 # --- Files -------------------------------------------------------------------
 DATA_DIR = "data"
 # Historical candles, one CSV per symbol: data/market/SPY.csv

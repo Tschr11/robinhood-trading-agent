@@ -31,6 +31,7 @@ robinhood-trading-agent/
 ├── data/                paper_account.db + market/<SYMBOL>.csv (git-ignored)
 ├── logs/                Trade journal and run logs
 ├── src/
+│   ├── backtest.py      Historical backtesting engine (separate from paper trading)
 │   ├── main.py          Prints one round of strategy signals (no trades)
 │   ├── market_data/     Market Data Engine
 │   │   ├── candles.py       Candle (OHLCV), DataKind (historical/live), errors
@@ -51,6 +52,7 @@ robinhood-trading-agent/
     ├── test_persistence.py              Restarts, saved trades, crash safety
     ├── test_market_data.py              Validation, indicators, providers
     ├── test_strategy.py                 Every entry, exit, hold and data rule
+    ├── test_backtest.py                 Chronology, look-ahead, costs, exits, metrics
     ├── market_fixtures.py               Locally generated test candles
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
@@ -122,6 +124,9 @@ dict such as {"SPY": 494.00}, built by market_data.latest_prices().
     fails, nothing is saved and the account reloads from disk
   - an optional `order_id` on buy/sell/deposit blocks the same order from
     being applied twice, even after a restart
+- **`src/backtest.py`** - Replays historical candles through the strategy in
+  time order with its own in-memory pretend account. It never touches the
+  paper account, its database or the journal. See "Backtesting" below.
 - **`src/journal.py`** - Appends each decision and transaction to
   `logs/trade_journal.csv` (with realized P&L and cash afterwards) so you can
   review what the agent did and why.
@@ -232,6 +237,99 @@ The tests use Python's built-in `unittest`, so nothing needs installing:
 ```
 python -m unittest discover tests -v
 ```
+
+## Backtesting
+
+```
+python -m src.backtest
+```
+
+This replays each watchlist symbol's CSV file in `data/market/` through
+`trend_vwap_v1` and prints a report labelled **BACKTEST - historical
+simulation**. It uses its own pretend money; your paper account in
+`data/paper_account.db` is never read or changed. From Python:
+
+```python
+from src.backtest import BacktestConfig, run_backtest
+from src.market_data import CSVHistoricalProvider
+
+data = CSVHistoricalProvider().get_candles("SPY")
+result = run_backtest(data, BacktestConfig(commission_per_trade=0.0, slippage_pct=0.001))
+print(result.report())
+```
+
+### How each candle is processed (no look-ahead)
+
+1. **Open** - an order decided at the *previous* candle's close fills at this
+   candle's open.
+2. **High/low** - if a position is open, check the stop-loss and take-profit.
+3. **Close** - the strategy is shown only the candles up to and including this
+   one. A BUY or SELL becomes an order for the *next* open.
+4. **Last candle of the day** - exit at the close and cancel pending orders
+   (day trading: nothing is held overnight).
+5. Record equity (cash + position value at the close).
+
+Tests confirm that changing future candles never changes an earlier decision,
+trade, or equity value.
+
+### Assumptions (all configurable in `BacktestConfig`)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `starting_capital` | $25 | pretend starting cash |
+| `risk_per_trade_pct` | 2% | size so a stop-loss loses at most this much (uses the Risk Manager) |
+| `max_position_pct` | 100% | most of the cash one position may use |
+| `daily_loss_pct` | 5% | no new entries after losing this much in a day |
+| `stop_loss_pct` / `take_profit_pct` | 1% / 2% | measured from the actual entry fill |
+| `commission_per_trade` | $0.00 | charged on entry and on exit |
+| `slippage_pct` | 0.05% | market orders fill this much worse |
+| `flatten_end_of_day` | on | exit at each day's last close |
+| `warmup_candles` | 50 | history needed before the first decision |
+| `lookback_candles` | 500 | how many recent candles the strategy sees each step |
+
+Fill rules:
+- **Entries and strategy exits** are market orders at the next open, with slippage.
+- **Stop-loss** fills at the stop price, or at the open if the price gapped
+  below it (worse), with slippage.
+- **Take-profit** is a limit order: it fills at the target, or at the open if
+  the price gapped above it, without slippage.
+- **If a candle touches both** the stop and the target, the backtest assumes
+  the stop came first (the worse outcome), because the order of prices inside
+  a candle is unknown.
+
+### Metrics
+
+Total return, win rate, average winning trade, average losing trade, profit
+factor (total won / total lost), maximum drawdown (largest fall from a
+previous high, in dollars and %), and number of trades. Every trade records
+entry/exit time and price, size, commission, realized P&L and exit reason.
+A metric that can't be calculated (e.g. profit factor with no losing trades)
+is shown as `n/a`, never as an invented number.
+
+### Limitations - please read
+
+- **One backtest proves nothing about the future.** It shows how fixed rules
+  behaved on one stretch of past data. Good results are often luck, or the
+  result of rules that happen to fit that period ("overfitting"). Test on many
+  symbols and time periods, and expect real results to be worse.
+- **Fills are idealized.** Real orders can fill worse than the next open, the
+  stop price or the target, especially in fast or thin markets. A limit order
+  touching its price may not fill at all.
+- **Only candle data is used.** The path inside a candle is unknown, so stop
+  vs. target ordering is a (conservative) guess.
+- **Costs are estimates.** Spreads, fees and slippage vary; the defaults are
+  not measurements.
+- **Missing candles are not detected.** A gap in your file (e.g. a missing
+  9:35 candle) is treated as if no time passed.
+- **"End of day" means the last candle of each calendar day in your data,**
+  not the exchange's official close.
+- **Your data must be accurate.** Splits, dividends, bad prints and survivorship
+  bias in the CSV files will distort results.
+- **RSI is computed over the lookback window** (500 candles), so it can differ
+  slightly from an RSI computed over the full history.
+- **Speed.** Each candle re-validates and re-computes over its window, which
+  is simple and safe but slow for very long histories.
+- **Pattern-day-trader rules, settlement and taxes are not modeled.**
 
 ## Simulated fills vs. real market execution
 
