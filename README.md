@@ -28,7 +28,7 @@ robinhood-trading-agent/
 ├── .gitignore           Files Git should not track (secrets, logs, data)
 ├── config/
 │   └── settings.py      All goals and risk rules in one place
-├── data/                Saved price data (future)
+├── data/                paper_account.db - the saved paper account (git-ignored)
 ├── logs/                Trade journal and run logs
 ├── src/
 │   ├── main.py          Runs one decision cycle, start to finish
@@ -36,12 +36,14 @@ robinhood-trading-agent/
 │   ├── strategy.py      Suggests BUY / SELL / HOLD with a reason
 │   ├── risk_manager.py  Approves or blocks each trade against the rules
 │   ├── paper_trader.py  Simulated account: buys, sells, P&L, daily losses
+│   ├── storage.py       Saves the paper account to a local SQLite file
 │   └── journal.py       Records every decision to a CSV file
 └── tests/
     ├── test_risk_manager.py             Approved and rejected trades
     ├── test_risk_manager_safeguards.py  Each safeguard, including bad data
     ├── test_paper_trader.py             Buys, sells, P&L, daily losses, journal
     ├── test_exits.py                    Automatic stop-loss / take-profit exits
+    ├── test_persistence.py              Restarts, saved trades, crash safety
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
 
@@ -69,7 +71,7 @@ market_data -> strategy -> risk_manager -> paper_trader -> journal
   - no trading once `MAX_DAILY_LOSS_PCT` is lost today, and no trade whose
     worst case would push past that limit
 - **`src/paper_trader.py`** - The paper trading engine (built and tested). A
-  pretend account that starts with $25 and lives only in memory:
+  pretend account that starts with $25 and is saved to disk:
   - `buy()` asks the Risk Manager first; a rejected buy changes nothing
   - `sell()` / `close_position()` lock in realized P&L and refuse to sell
     shares you don't hold
@@ -82,6 +84,16 @@ market_data -> strategy -> risk_manager -> paper_trader -> journal
     entry). Exits work even after the daily loss limit is hit. Missing or
     invalid prices are skipped (never guessed) and logged
   - every buy, sell, deposit and rejection is written to the journal
+- **`src/storage.py`** - Saves the paper account in `data/paper_account.db`
+  using Python's built-in SQLite (a local file, no network, no credentials):
+  - cash, realized P&L, and today's loss tracking (so a restart cannot
+    dodge the daily loss limit)
+  - open positions: symbol, shares, average entry price, stop-loss, take-profit
+  - a `transactions` ledger of every buy, sell, automatic exit and deposit
+  - every change is one all-or-nothing database transaction: if anything
+    fails, nothing is saved and the account reloads from disk
+  - an optional `order_id` on buy/sell/deposit blocks the same order from
+    being applied twice, even after a restart
 - **`src/journal.py`** - Appends each decision and transaction to
   `logs/trade_journal.csv` (with realized P&L and cash afterwards) so you can
   review what the agent did and why.
@@ -94,6 +106,15 @@ The skeleton uses only the Python standard library. From the project root:
 ```
 python -m src.main
 ```
+
+## Your saved paper account
+
+The first run creates `data/paper_account.db` with the configured starting
+capital ($25). Every later run **restores** that account - cash, open
+positions, P&L and today's losses - instead of starting over.
+
+To start fresh with a new $25 account, stop the program and delete
+`data/paper_account.db`. (The CSV journal in `logs/` is separate and is kept.)
 
 ## Running the tests
 

@@ -55,7 +55,13 @@ class PaperTraderTestCase(unittest.TestCase):
     def make_trader(self, **kwargs):
         kwargs.setdefault("journal_file", self.journal_file)
         kwargs.setdefault("today", self.clock)
-        return PaperTrader(**kwargs)
+        # A fresh, throwaway database per trader (never data/paper_account.db)
+        self.db_count = getattr(self, "db_count", 0) + 1
+        kwargs.setdefault("db_path",
+                          os.path.join(self.tmp.name, f"account{self.db_count}.db"))
+        trader = PaperTrader(**kwargs)
+        self.addCleanup(trader.close)
+        return trader
 
     def journal_rows(self):
         return journal.read_journal(self.journal_file)

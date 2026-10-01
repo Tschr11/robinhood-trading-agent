@@ -33,3 +33,6 @@ ALLOW_FRACTIONAL_SHARES = True # needed to trade with a small balance
 DATA_DIR = "data"
 LOG_DIR = "logs"
 JOURNAL_FILE = "logs/trade_journal.csv"
+# The saved paper account (cash, positions, P&L). Delete this file to start
+# over with a fresh $25 account. It holds no credentials - only pretend money.
+DATABASE_FILE = "data/paper_account.db"

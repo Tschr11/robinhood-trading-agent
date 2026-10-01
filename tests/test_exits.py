@@ -38,7 +38,13 @@ class ExitTestCase(unittest.TestCase):
     def make_trader(self, **kwargs):
         kwargs.setdefault("journal_file", self.journal_file)
         kwargs.setdefault("today", lambda: date(2026, 1, 5))
-        return PaperTrader(**kwargs)
+        # A fresh, throwaway database per trader (never data/paper_account.db)
+        self.db_count = getattr(self, "db_count", 0) + 1
+        kwargs.setdefault("db_path",
+                          os.path.join(self.tmp.name, f"account{self.db_count}.db"))
+        trader = PaperTrader(**kwargs)
+        self.addCleanup(trader.close)
+        return trader
 
     def open_standard(self, trader=None, **kwargs):
         result = (trader or self.trader).buy("SPY", 0.04, 500.00, 495.00, **kwargs)
