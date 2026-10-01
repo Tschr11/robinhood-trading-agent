@@ -1,53 +1,54 @@
 """
-main.py - The starting point. Runs one paper-trading decision cycle.
+main.py - The starting point. Prints one round of strategy signals.
 
 Run from the project root with:
     python -m src.main
 
-Flow: load historical candles -> strategy suggests -> risk manager checks
-      -> paper trader simulates -> journal records.
+Flow: load historical candles -> strategy evaluates its rules
+      -> signal is printed and written to the journal.
 
-Prices come from your own CSV files in data/market/ (see README.md).
+Because the only data source so far is HISTORICAL (your CSV files in
+data/market/), this script does NOT place any trades, not even paper ones.
+Acting on signals needs live data and the (not yet built) trading loop.
 If a file is missing or invalid, that symbol is skipped - the agent never
-makes up prices. These are HISTORICAL prices, not live market quotes.
+makes up prices.
 """
 
 from config import settings
 from src import journal, strategy
-from src.market_data import CSVHistoricalProvider, MarketDataError
+from src.market_data import CSVHistoricalProvider, DataKind, MarketDataError
 from src.paper_trader import PaperTrader
 
 
-def run_once(trader: PaperTrader, provider=None) -> None:
+def run_once(trader: PaperTrader, provider=None) -> list:
+    """Evaluate every watchlist symbol and return the signals (no trades)."""
     provider = provider or CSVHistoricalProvider()
+    signals = []
     for symbol in settings.WATCHLIST:
         try:
-            data = provider.get_candles(symbol, min_candles=5)
+            data = provider.get_candles(symbol)
         except MarketDataError as error:
             journal.log_decision(symbol, "NONE", "SKIPPED", 0.0, "",
                                  f"No usable market data: {error}")
             print(f"{symbol}: SKIPPED - no usable market data. {error}")
             continue
 
-        prices = data.closes[-20:]
-        price = data.latest_close
-        signal, reason = strategy.generate_signal(prices)
-        reason = f"{reason} ({data.kind.value} data from {data.source})"
-
-        if signal == "BUY":
-            # The paper trader asks the risk manager and writes the journal.
-            stop = round(price * (1 - settings.STOP_LOSS_PCT), 2)
-            shares = trader.risk_manager.max_shares(
-                trader.account_state(), price, stop)
-            result = trader.buy(symbol, shares, price, stop, reason)
-            print(f"{symbol}: BUY -> {result.action}. {result.reason}")
-        else:
-            journal.log_decision(symbol, signal, "NONE", 0.0, price, reason)
-            print(f"{symbol}: {signal} -> NONE. {reason}")
-
-    print(f"Simulated cash remaining: ${trader.cash:.2f}")
+        # Reading the account only - the strategy never changes it.
+        result = strategy.evaluate(
+            data, expected_kind=DataKind.HISTORICAL,
+            has_open_position=symbol in trader.positions)
+        signals.append(result)
+        journal.log_decision(symbol, result.signal.value, "SIGNAL ONLY", 0.0,
+                             data.latest_close, result.explain().replace("\n", " | "))
+        print(result.explain())
+    return signals
 
 
 if __name__ == "__main__":
     print("Robinhood Trading Agent - PAPER TRADING ONLY (no real money)")
-    run_once(PaperTrader())
+    print("Signals from historical data are for research only; no trades are placed.\n")
+    trader = PaperTrader()
+    try:
+        run_once(trader)
+    finally:
+        trader.close()

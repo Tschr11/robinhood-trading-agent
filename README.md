@@ -31,14 +31,14 @@ robinhood-trading-agent/
 ├── data/                paper_account.db + market/<SYMBOL>.csv (git-ignored)
 ├── logs/                Trade journal and run logs
 ├── src/
-│   ├── main.py          Runs one decision cycle, start to finish
+│   ├── main.py          Prints one round of strategy signals (no trades)
 │   ├── market_data/     Market Data Engine
 │   │   ├── candles.py       Candle (OHLCV), DataKind (historical/live), errors
 │   │   ├── validation.py    Rejects bad candles - never repairs them
 │   │   ├── dataset.py       MarketDataSet: validated + labelled candles
 │   │   ├── indicators.py    SMA 20/50, RSI 14, VWAP, average volume
 │   │   └── providers.py     Provider interface + offline CSV provider
-│   ├── strategy.py      Suggests BUY / SELL / HOLD with a reason
+│   ├── strategy.py      Rules-based BUY / SELL / HOLD with explanations
 │   ├── risk_manager.py  Approves or blocks each trade against the rules
 │   ├── paper_trader.py  Simulated account: buys, sells, P&L, daily losses
 │   ├── storage.py       Saves the paper account to a local SQLite file
@@ -50,6 +50,7 @@ robinhood-trading-agent/
     ├── test_exits.py                    Automatic stop-loss / take-profit exits
     ├── test_persistence.py              Restarts, saved trades, crash safety
     ├── test_market_data.py              Validation, indicators, providers
+    ├── test_strategy.py                 Every entry, exit, hold and data rule
     ├── market_fixtures.py               Locally generated test candles
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
@@ -82,8 +83,12 @@ dict such as {"SPY": 494.00}, built by market_data.latest_prices().
     can change later. Validation is built into the interface, so no provider
     can skip it. Included: `CSVHistoricalProvider` (your CSV files) and
     `InMemoryProvider` (tests/backtests). There is no live provider yet
-- **`src/strategy.py`** - A simple placeholder strategy: buy when the price is
-  above its recent average. It only *suggests* trades.
+- **`src/strategy.py`** - The rules-based Strategy Engine (built and tested).
+  `evaluate(dataset, expected_kind=..., has_open_position=...)` returns a
+  `StrategySignal`: symbol, BUY/SELL/HOLD, timestamp, data source,
+  historical/live label, and every rule marked met or not met with its
+  numbers. It only *suggests*; it never places orders or touches the account.
+  See "The strategy" below.
 - **`src/risk_manager.py`** - The safety gate (fully built and tested). Every
   proposed BUY must include a stop-loss and pass these rules, or it is rejected
   with a reason a beginner can read:
@@ -120,15 +125,75 @@ dict such as {"SPY": 494.00}, built by market_data.latest_prices().
 - **`src/journal.py`** - Appends each decision and transaction to
   `logs/trade_journal.csv` (with realized P&L and cash afterwards) so you can
   review what the agent did and why.
-- **`src/main.py`** - Ties the steps together and runs one cycle.
+- **`src/main.py`** - Loads your CSV data, prints a signal with its full
+  explanation for each watchlist symbol, and writes it to the journal.
+  Because the data is historical, it places **no** trades.
 
-## Running it (later)
+## Running it
 
-The skeleton uses only the Python standard library. From the project root:
+Everything uses only the Python standard library. From the project root:
 
 ```
 python -m src.main
 ```
+
+This prints one signal per watchlist symbol from your CSV files in
+`data/market/`. It does not trade.
+
+## The strategy (`trend_vwap_v1`)
+
+A simple, deterministic trend-following rule set. There is no machine
+learning, AI model or randomness: the same data always gives the same
+signal. All thresholds live in `config/settings.py`.
+
+**Entry - BUY only if every rule passes and no position is open:**
+
+| Rule | Condition | Idea |
+|---|---|---|
+| E1 | SMA 20 > SMA 50 | short-term trend is above the longer-term trend |
+| E2 | close > VWAP | price is above the average paid today |
+| E3 | close > SMA 20 | price is above its recent average |
+| E4 | 50 <= RSI 14 <= 70 | momentum is positive but not overbought |
+| E5 | latest volume >= 20-candle average volume x 1.0 | real trading interest |
+
+**Exit - SELL if any rule passes and a position is open:**
+
+| Rule | Condition | Idea |
+|---|---|---|
+| X1 | SMA 20 < SMA 50 | the trend has turned down |
+| X2 | close < VWAP | price fell below today's average |
+| X3 | RSI 14 >= 75 | overbought - lock in the move |
+
+Stop-loss and take-profit exits are separate: the paper trader handles them.
+
+**Otherwise HOLD.** The strategy also returns HOLD, never BUY or SELL, when:
+- there are fewer than 50 candles (SMA 50 needs 50)
+- indicator values are invalid (NaN, infinity, out of range)
+- live data is older than 120 seconds or time-stamped in the future
+
+**Historical is never treated as live.** The caller must say which kind of
+data it expects (`expected_kind`); a mismatch is an error. Signals from
+historical data are marked "for research only, not a live trading signal".
+
+### Limitations - please read
+
+- **No profitability claim.** These are common textbook indicators combined
+  in a simple way. Nothing here has been shown to make money, and no result
+  in this project should be read as evidence that it will.
+- **Not backtested yet.** The rules have only been checked for correct
+  behaviour, not for performance on real market history.
+- **Indicators lag.** Moving averages and RSI describe the past; signals
+  often arrive after much of a move has happened.
+- **Choppy markets cause whipsaws.** In sideways markets price crosses VWAP
+  and the averages often, which can produce many small losing trades.
+- **The thresholds are arbitrary starting points** (50/70/75, 1.0x volume),
+  not optimized or validated values.
+- **Long only, one position.** It never shorts and doesn't size positions;
+  the risk manager does sizing.
+- **The volume rule compares the latest candle with an average that includes
+  it**, and the latest candle may still be forming.
+- **VWAP uses the calendar day**, so pre-market candles in your data count.
+- **No news, earnings, spreads, fees or market hours** are considered.
 
 ## Market data files
 

@@ -29,6 +29,29 @@ STOP_LOSS_PCT = 0.01           # exit a trade if it falls 1% below entry
 TAKE_PROFIT_PCT = 0.02         # exit a trade if it rises 2% above entry
 ALLOW_FRACTIONAL_SHARES = True # needed to trade with a small balance
 
+# --- Strategy rules (see src/strategy.py and README.md) ----------------------
+# A deterministic trend-following strategy. These numbers ARE the strategy:
+# changing them changes the signals. They are a starting point for paper
+# research, not a recommendation, and nothing here implies profitability.
+STRATEGY_NAME = "trend_vwap_v1"
+# Entry (BUY) - every rule must pass, and no position may be open:
+#   E1  SMA 20 > SMA 50                     (short-term trend above long-term)
+#   E2  close > VWAP                        (price above today's average paid)
+#   E3  close > SMA 20                      (price above its recent average)
+#   E4  RSI_ENTRY_MIN <= RSI 14 <= RSI_ENTRY_MAX   (momentum, not overbought)
+#   E5  latest volume >= average volume x VOLUME_MULTIPLIER (real interest)
+RSI_ENTRY_MIN = 50.0
+RSI_ENTRY_MAX = 70.0
+VOLUME_MULTIPLIER = 1.0
+# Exit (SELL) - any one rule is enough, and a position must be open:
+#   X1  SMA 20 < SMA 50                     (trend has turned down)
+#   X2  close < VWAP                        (price fell below today's average)
+#   X3  RSI 14 >= RSI_EXIT                  (overbought - lock in the move)
+# (Stop-loss and take-profit exits are handled separately by the paper trader.)
+RSI_EXIT = 75.0
+# Live data older than this is treated as unusable (HOLD, never trade).
+LIVE_DATA_MAX_AGE_SECONDS = 120
+
 # --- Files -------------------------------------------------------------------
 DATA_DIR = "data"
 # Historical candles, one CSV per symbol: data/market/SPY.csv
