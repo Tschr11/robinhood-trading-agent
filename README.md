@@ -35,10 +35,13 @@ robinhood-trading-agent/
 │   ├── market_data.py   Provides prices (simulated for now)
 │   ├── strategy.py      Suggests BUY / SELL / HOLD with a reason
 │   ├── risk_manager.py  Approves or blocks each trade against the rules
-│   ├── paper_trader.py  Simulated account: cash, positions, deposits
+│   ├── paper_trader.py  Simulated account: buys, sells, P&L, daily losses
 │   └── journal.py       Records every decision to a CSV file
 └── tests/
-    └── test_risk_manager.py   Tests for approved and rejected trades
+    ├── test_risk_manager.py             Approved and rejected trades
+    ├── test_risk_manager_safeguards.py  Each safeguard, including bad data
+    ├── test_paper_trader.py             Buys, sells, P&L, daily losses, journal
+    └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
 
 ## How the modules work together
@@ -64,9 +67,19 @@ market_data -> strategy -> risk_manager -> paper_trader -> journal
   - the loss if the stop-loss hits must be at most `MAX_RISK_PER_TRADE_PCT` of the account
   - no trading once `MAX_DAILY_LOSS_PCT` is lost today, and no trade whose
     worst case would push past that limit
-- **`src/paper_trader.py`** - A pretend brokerage account kept in memory.
-- **`src/journal.py`** - Appends each decision to `logs/trade_journal.csv` so
-  you can review what the agent did and why.
+- **`src/paper_trader.py`** - The paper trading engine (built and tested). A
+  pretend account that starts with $25 and lives only in memory:
+  - `buy()` asks the Risk Manager first; a rejected buy changes nothing
+  - `sell()` / `close_position()` lock in realized P&L and refuse to sell
+    shares you don't hold
+  - tracks cash, positions (shares, average entry price, stop-loss),
+    realized P&L, and today's losses (reset each new day)
+  - `unrealized_pnl(prices)` and `total_equity(prices)` use prices you supply
+  - `account_state()` hands the real numbers to the Risk Manager
+  - every buy, sell, deposit and rejection is written to the journal
+- **`src/journal.py`** - Appends each decision and transaction to
+  `logs/trade_journal.csv` (with realized P&L and cash afterwards) so you can
+  review what the agent did and why.
 - **`src/main.py`** - Ties the steps together and runs one cycle.
 
 ## Running it (later)

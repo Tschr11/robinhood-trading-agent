@@ -9,41 +9,30 @@ Flow: get prices -> strategy suggests -> risk manager checks
 """
 
 from config import settings
-from src import journal, market_data, risk_manager, strategy
-from src.paper_trader import PaperAccount
+from src import journal, market_data, strategy
+from src.paper_trader import PaperTrader
 
 
-def run_once(account: PaperAccount) -> None:
-    risks = risk_manager.RiskManager()
+def run_once(trader: PaperTrader) -> None:
     for symbol in settings.WATCHLIST:
         prices = market_data.get_recent_prices(symbol)
         price = prices[-1]
         signal, reason = strategy.generate_signal(prices)
-        action, shares = "NONE", 0.0
 
         if signal == "BUY":
-            state = risk_manager.AccountState(
-                cash=account.cash,
-                equity=account.total_value(
-                    {s: market_data.get_latest_price(s) for s in account.positions}),
-                open_positions=len(account.positions))
+            # The paper trader asks the risk manager and writes the journal.
             stop = round(price * (1 - settings.STOP_LOSS_PCT), 2)
-            shares = risks.max_shares(state, price, stop)
-            decision = risks.evaluate(
-                risk_manager.TradeRequest(symbol, shares, price, stop), state)
-            reason = f"{reason} {decision.explain()}"
-            if decision.approved:
-                account.buy(symbol, shares, price)
-                action = "SIMULATED BUY"
-            else:
-                shares = 0.0
+            shares = trader.risk_manager.max_shares(
+                trader.account_state(), price, stop)
+            result = trader.buy(symbol, shares, price, stop, reason)
+            print(f"{symbol}: BUY -> {result.action}. {result.reason}")
+        else:
+            journal.log_decision(symbol, signal, "NONE", 0.0, price, reason)
+            print(f"{symbol}: {signal} -> NONE. {reason}")
 
-        journal.log_decision(symbol, signal, action, shares, price, reason)
-        print(f"{symbol}: {signal} -> {action}. {reason}")
-
-    print(f"Simulated cash remaining: ${account.cash:.2f}")
+    print(f"Simulated cash remaining: ${trader.cash:.2f}")
 
 
 if __name__ == "__main__":
     print("Robinhood Trading Agent - PAPER TRADING ONLY (no real money)")
-    run_once(PaperAccount())
+    run_once(PaperTrader())
