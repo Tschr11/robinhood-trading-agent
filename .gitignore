@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets - this project must never contain credentials
+.env
+*.env
+secrets*
+*.key
+*.pem
+
+# Generated data and logs (keep the folders, ignore the contents)
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

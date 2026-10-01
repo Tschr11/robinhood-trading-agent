@@ -1,0 +1,9 @@
+# Robinhood Trading Agent - Python dependencies
+#
+# The initial skeleton uses only the Python standard library,
+# so nothing needs to be installed yet.
+#
+# Packages we expect to add later (uncomment when we actually need them):
+# pandas        # tables of price data
+# pytest        # running the tests in tests/
+# streamlit     # beginner-friendly dashboard
