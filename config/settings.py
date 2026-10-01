@@ -20,9 +20,10 @@ TRADING_STYLE = "day_trading"  # positions are opened and closed the same day
 WATCHLIST = ["SPY", "QQQ"]     # symbols the agent is allowed to look at
 
 # --- Risk rules (the agent must obey these before every trade) ---------------
-MAX_RISK_PER_TRADE_PCT = 0.02  # risk at most 2% of the account on one trade
-MAX_POSITION_SIZE_PCT = 0.50   # never put more than 50% of cash in one position
-MAX_DAILY_LOSS_PCT = 0.05      # stop trading for the day after a 5% loss
+# Percentages are written as decimals: 0.02 means 2%.
+MAX_RISK_PER_TRADE_PCT = 0.02  # lose at most 2% of the account if a stop-loss hits
+MAX_DAILY_LOSS_PCT = 0.05      # stop trading for the day after losing 5%
+MAX_OPEN_POSITIONS = 1         # hold only one position at a time (for now)
 MAX_TRADES_PER_DAY = 3         # keep the number of trades small
 STOP_LOSS_PCT = 0.01           # exit a trade if it falls 1% below entry
 TAKE_PROFIT_PCT = 0.02         # exit a trade if it rises 2% above entry

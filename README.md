@@ -37,7 +37,8 @@ robinhood-trading-agent/
 │   ├── risk_manager.py  Approves or blocks each trade against the rules
 │   ├── paper_trader.py  Simulated account: cash, positions, deposits
 │   └── journal.py       Records every decision to a CSV file
-└── tests/               Automated tests (future)
+└── tests/
+    └── test_risk_manager.py   Tests for approved and rejected trades
 ```
 
 ## How the modules work together
@@ -54,8 +55,15 @@ market_data -> strategy -> risk_manager -> paper_trader -> journal
   prices so everything works offline.
 - **`src/strategy.py`** - A simple placeholder strategy: buy when the price is
   above its recent average. It only *suggests* trades.
-- **`src/risk_manager.py`** - The safety gate. Every trade must pass its checks
-  or it is blocked, with a reason a beginner can read.
+- **`src/risk_manager.py`** - The safety gate (fully built and tested). Every
+  proposed BUY must include a stop-loss and pass these rules, or it is rejected
+  with a reason a beginner can read:
+  - paper trading only
+  - the cost must fit within available cash
+  - at most `MAX_OPEN_POSITIONS` open positions (1 for now)
+  - the loss if the stop-loss hits must be at most `MAX_RISK_PER_TRADE_PCT` of the account
+  - no trading once `MAX_DAILY_LOSS_PCT` is lost today, and no trade whose
+    worst case would push past that limit
 - **`src/paper_trader.py`** - A pretend brokerage account kept in memory.
 - **`src/journal.py`** - Appends each decision to `logs/trade_journal.csv` so
   you can review what the agent did and why.
@@ -67,6 +75,14 @@ The skeleton uses only the Python standard library. From the project root:
 
 ```
 python -m src.main
+```
+
+## Running the tests
+
+The tests use Python's built-in `unittest`, so nothing needs installing:
+
+```
+python -m unittest discover tests -v
 ```
 
 ## Important notes for a small account

@@ -14,6 +14,7 @@ from src.paper_trader import PaperAccount
 
 
 def run_once(account: PaperAccount) -> None:
+    risks = risk_manager.RiskManager()
     for symbol in settings.WATCHLIST:
         prices = market_data.get_recent_prices(symbol)
         price = prices[-1]
@@ -21,14 +22,21 @@ def run_once(account: PaperAccount) -> None:
         action, shares = "NONE", 0.0
 
         if signal == "BUY":
-            approved, risk_reason = risk_manager.approve_trade(
-                cash=account.cash, price=price, trades_today=0,
-                loss_today=0.0, starting_equity=account.cash)
-            reason = f"{reason} {risk_reason}"
-            if approved:
-                shares = risk_manager.position_size(account.cash, price)
+            state = risk_manager.AccountState(
+                cash=account.cash,
+                equity=account.total_value(
+                    {s: market_data.get_latest_price(s) for s in account.positions}),
+                open_positions=len(account.positions))
+            stop = round(price * (1 - settings.STOP_LOSS_PCT), 2)
+            shares = risks.max_shares(state, price, stop)
+            decision = risks.evaluate(
+                risk_manager.TradeRequest(symbol, shares, price, stop), state)
+            reason = f"{reason} {decision.explain()}"
+            if decision.approved:
                 account.buy(symbol, shares, price)
                 action = "SIMULATED BUY"
+            else:
+                shares = 0.0
 
         journal.log_decision(symbol, signal, action, shares, price, reason)
         print(f"{symbol}: {signal} -> {action}. {reason}")
