@@ -41,6 +41,7 @@ robinhood-trading-agent/
     ├── test_risk_manager.py             Approved and rejected trades
     ├── test_risk_manager_safeguards.py  Each safeguard, including bad data
     ├── test_paper_trader.py             Buys, sells, P&L, daily losses, journal
+    ├── test_exits.py                    Automatic stop-loss / take-profit exits
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
 
@@ -76,6 +77,10 @@ market_data -> strategy -> risk_manager -> paper_trader -> journal
     realized P&L, and today's losses (reset each new day)
   - `unrealized_pnl(prices)` and `total_equity(prices)` use prices you supply
   - `account_state()` hands the real numbers to the Risk Manager
+  - `check_exits(prices)` automatically closes any position whose price is at
+    or below its stop-loss, or at or above its take-profit (default 2% above
+    entry). Exits work even after the daily loss limit is hit. Missing or
+    invalid prices are skipped (never guessed) and logged
   - every buy, sell, deposit and rejection is written to the journal
 - **`src/journal.py`** - Appends each decision and transaction to
   `logs/trade_journal.csv` (with realized P&L and cash afterwards) so you can
@@ -97,6 +102,28 @@ The tests use Python's built-in `unittest`, so nothing needs installing:
 ```
 python -m unittest discover tests -v
 ```
+
+## Simulated fills vs. real market execution
+
+Every simulated order - including automatic stop-loss and take-profit
+exits - fills at **exactly the price supplied** to the paper trader. Real
+trading is usually worse:
+
+- **Gaps.** Prices can jump past your stop-loss without trading in between
+  (for example overnight, or after news). A stop at $495 can fill at $480.
+  The simulator only models this if the supplied price itself has gapped.
+- **Spread.** You buy at the higher *ask* price and sell at the lower *bid*
+  price. The difference is a cost on every round trip that the simulator
+  does not charge.
+- **Slippage.** By the time an order reaches the market, the price may have
+  moved. A real stop-loss usually becomes a market order once triggered, and
+  it fills at whatever price is available, not at the stop price.
+- **Timing.** The simulator only notices a stop-loss or take-profit when
+  `check_exits()` is called with a new price. Between checks, the price can
+  move a long way.
+
+So paper-trading results are a **best case**. Losses in real trading can be
+larger than the planned risk, and profits smaller.
 
 ## Important notes for a small account
 

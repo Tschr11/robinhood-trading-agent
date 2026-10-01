@@ -6,6 +6,8 @@ What it does:
     - simulates BUY and SELL orders
     - keeps the books: cash, open positions, entry prices, profit and loss (P&L)
     - asks the Risk Manager to approve every BUY before it happens
+    - automatically closes positions that hit their stop-loss or
+      take-profit price, using simulated prices you supply (check_exits)
     - writes every transaction (and every rejection) to the trading journal
 
 What it does NOT do:
@@ -18,6 +20,10 @@ Two kinds of profit and loss:
                      (shares sold x (sell price - entry price))
     unrealized P&L = profit or loss on paper for positions still held
                      (shares held x (current price - entry price))
+
+Simulated fills happen at EXACTLY the price supplied. Real markets are
+worse: prices can gap past a stop-loss, and the spread and slippage mean a
+real order often fills at a less favorable price. See README.md.
 """
 
 from dataclasses import dataclass
@@ -36,8 +42,9 @@ class Position:
     """Shares of one symbol that we currently hold."""
     symbol: str
     shares: float
-    entry_price: float      # average price paid per share
-    stop_loss_price: float  # price where we planned to cut the loss
+    entry_price: float        # average price paid per share
+    stop_loss_price: float    # sell automatically at or below this price
+    take_profit_price: float  # sell automatically at or above this price
 
     @property
     def cost_basis(self) -> float:
@@ -127,10 +134,14 @@ class PaperTrader:
     # -- Buying ----------------------------------------------------------------
 
     def buy(self, symbol: str, shares: float, price: float,
-            stop_loss_price: float, reason: str = "") -> TradeResult:
+            stop_loss_price: float, reason: str = "",
+            take_profit_price: float | None = None) -> TradeResult:
         """
         Simulate buying `shares` of `symbol` at `price`.
         The Risk Manager must approve first; nothing changes if it says no.
+
+        `take_profit_price` is optional. If left out, it is set
+        TAKE_PROFIT_PCT above the entry price (2%: $500 -> $510).
         """
         symbol = self._clean_symbol(symbol)
 
@@ -150,20 +161,37 @@ class PaperTrader:
                                 f"Rejected: Trade costs ${cost:.2f} but only "
                                 f"${self.cash:.2f} cash is available.")
 
-        # Step 3: update the books.
-        self.cash = max(0.0, self.cash - cost)  # max() hides tiny rounding dust
+        # Step 3: work out the take-profit price. Buying more of something
+        # we already hold makes the entry price the AVERAGE paid for all
+        # shares, so the take-profit must sit above that average.
         held = self.positions.get(symbol)
         if held is None:
-            self.positions[symbol] = Position(symbol, shares, price, stop_loss_price)
+            new_entry = price
         else:
-            # Buying more of something we already hold: the entry price
-            # becomes the average price paid for all the shares.
-            total_shares = held.shares + shares
-            held.entry_price = (held.cost_basis + cost) / total_shares
-            held.shares = total_shares
-            held.stop_loss_price = stop_loss_price
+            new_entry = (held.cost_basis + cost) / (held.shares + shares)
+        if take_profit_price is None:
+            take_profit_price = new_entry * (1 + settings.TAKE_PROFIT_PCT)
+        elif (not is_real_number(take_profit_price)
+              or take_profit_price <= max(price, new_entry)):
+            return self._reject("BUY", symbol, shares, price,
+                                "Rejected: Take-profit price must be a number "
+                                f"above the entry price ${max(price, new_entry):.2f} "
+                                f"(got {take_profit_price!r}).")
 
-        message = f"Simulated buy of {shares} {symbol} at ${price:.2f}. {reason}".strip()
+        # Step 4: update the books.
+        self.cash = max(0.0, self.cash - cost)  # max() hides tiny rounding dust
+        if held is None:
+            self.positions[symbol] = Position(symbol, shares, price,
+                                              stop_loss_price, take_profit_price)
+        else:
+            held.shares += shares
+            held.entry_price = new_entry
+            held.stop_loss_price = stop_loss_price
+            held.take_profit_price = take_profit_price
+
+        message = (f"Simulated buy of {shares} {symbol} at ${price:.2f} "
+                   f"(stop-loss ${stop_loss_price:.2f}, take-profit "
+                   f"${take_profit_price:.2f}). {reason}").strip()
         self._record("BUY", symbol, shares, price, message)
         return TradeResult(True, "BUY", symbol, shares, price, message)
 
@@ -201,7 +229,17 @@ class PaperTrader:
                                 f"Rejected: Tried to sell {shares} {symbol} but "
                                 f"only {held.shares:g} are held.")
 
-        # Never sell a hair more than we own because of rounding.
+        return self._fill_sell(held, shares, price, "SELL", reason)
+
+    def _fill_sell(self, held: Position, shares: float, price: float,
+                   action: str, reason: str) -> TradeResult:
+        """
+        The one place where a sale actually updates the books. Used by both
+        manual sells and automatic stop-loss / take-profit exits.
+        Callers must already have checked that the inputs are valid.
+        """
+        symbol = held.symbol
+        # Never sell more than we own (this also absorbs rounding dust).
         shares = min(shares, held.shares)
 
         # Update the books.
@@ -221,8 +259,9 @@ class PaperTrader:
 
         message = (f"Simulated sell of {shares:g} {symbol} at ${price:.2f}, "
                    f"realized P&L ${pnl:+.2f}. {reason}").strip()
-        self._record("SELL", symbol, shares, price, message, realized_pnl=pnl)
-        return TradeResult(True, "SELL", symbol, shares, price, message, pnl)
+        self._record(action, symbol, shares, price, message, realized_pnl=pnl,
+                     signal="SELL")
+        return TradeResult(True, action, symbol, shares, price, message, pnl)
 
     def close_position(self, symbol: str, price: float, reason: str = "") -> TradeResult:
         """Sell every share we hold of `symbol`."""
@@ -232,6 +271,68 @@ class PaperTrader:
             return self._reject("SELL", symbol, 0, price,
                                 f"Rejected: You don't hold any {symbol} to sell.")
         return self.sell(symbol, held.shares, price, reason)
+
+    # -- Automatic exits: stop-loss and take-profit ---------------------------
+
+    def check_exits(self, market_prices: dict[str, float]) -> list[TradeResult]:
+        """
+        Compare each open position with its current simulated price, e.g.
+        check_exits({"SPY": 494.00}), and close it automatically if:
+
+            price <= stop-loss    -> "STOP-LOSS SELL"   (cut the loss)
+            price >= take-profit  -> "TAKE-PROFIT SELL" (lock in the gain)
+
+        Anything in between: do nothing.
+
+        Exits do NOT ask the Risk Manager, so they still work after the daily
+        loss limit is reached - we must always be able to get OUT of a trade.
+
+        If a price is missing or invalid, that position is SKIPPED (never
+        guessed) and the skip is written to the journal, because it means the
+        position is unprotected until a good price arrives.
+
+        Returns a list describing every exit and every skip.
+        """
+        self._start_new_day_if_needed()
+        results = []
+
+        if settings.PAPER_TRADING is not True:
+            return [self._skip("ALL", "Only paper trading is allowed.")]
+        if not self.positions:
+            return results
+        if not isinstance(market_prices, dict):
+            return [self._skip("ALL", "Market prices must be a dict like "
+                                      f"{{'SPY': 500.00}} (got {market_prices!r}).")]
+
+        # Accept " spy " as well as "SPY" for the keys.
+        prices = {self._clean_symbol(k): v for k, v in market_prices.items()
+                  if isinstance(k, str)}
+
+        # list(...) makes a copy, because closing a position removes it
+        # from self.positions while we are looping.
+        for held in list(self.positions.values()):
+            price = prices.get(held.symbol)
+            if not is_real_number(price) or price <= 0:
+                results.append(self._skip(
+                    held.symbol, f"No valid price for {held.symbol} "
+                                 f"(got {price!r}); stop-loss and take-profit "
+                                 "were not checked."))
+            elif price <= held.stop_loss_price + TOLERANCE:
+                results.append(self._fill_sell(
+                    held, held.shares, price, "STOP-LOSS SELL",
+                    f"Stop-loss hit: price ${price:.2f} is at or below the "
+                    f"stop of ${held.stop_loss_price:.2f}."))
+            elif price >= held.take_profit_price - TOLERANCE:
+                results.append(self._fill_sell(
+                    held, held.shares, price, "TAKE-PROFIT SELL",
+                    f"Take-profit hit: price ${price:.2f} is at or above the "
+                    f"target of ${held.take_profit_price:.2f}."))
+        return results
+
+    def _skip(self, symbol, reason: str) -> TradeResult:
+        """Journal an exit check that could not be done. Books unchanged."""
+        self._record("EXIT CHECK SKIPPED", symbol, "", "", reason, signal="CHECK")
+        return TradeResult(False, "EXIT CHECK SKIPPED", symbol, "", "", reason)
 
     # -- Deposits --------------------------------------------------------------
 

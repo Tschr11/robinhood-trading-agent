@@ -407,9 +407,10 @@ class DailyLossTrackingTests(PaperTraderTestCase):
     def test_selling_is_still_allowed_after_daily_limit(self):
         """Hitting the limit must never trap us in a position."""
         trader = self.make_trader(risk_manager=RiskManager(max_open_positions=2))
-        trader.buy("SPY", 0.04, 100.00, 95.00)
-        trader.buy("QQQ", 0.1, 100.00, 95.00)
-        trader.sell("QQQ", 0.1, 87.50)          # -$1.25
+        self.assertTrue(trader.buy("SPY", 0.04, 100.00, 95.00).success)
+        self.assertTrue(trader.buy("QQQ", 0.1, 100.00, 95.00).success)
+        self.assertTrue(trader.sell("QQQ", 0.1, 87.50).success)  # -$1.25
+        self.assertFalse(trader.buy("QQQ", 0.01, 100.00, 99.00).success)
         self.assertTrue(trader.sell("SPY", 0.04, 100.00).success)
 
 
