@@ -18,6 +18,7 @@ This module only does math and checks rules. It never places orders and
 never connects to Robinhood or any other brokerage.
 """
 
+import math
 from dataclasses import dataclass, field
 
 from config import settings
@@ -26,6 +27,24 @@ from config import settings
 # This tiny tolerance stops a trade that sits EXACTLY on a limit from being
 # rejected because of that rounding noise.
 TOLERANCE = 1e-9
+
+
+def is_real_number(value) -> bool:
+    """
+    True only for ordinary, finite numbers like 25 or 0.04.
+
+    Rejects text ("25"), None, True/False, NaN ("not a number") and infinity.
+    This matters because NaN is sneaky: every comparison with it is False,
+    so `nan > limit` is False and a NaN trade would slip past every check.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
+def is_whole_number(value) -> bool:
+    """True for whole numbers like 0, 1, 2 (but not True/False or 1.5)."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 # --- Inputs ------------------------------------------------------------------
@@ -82,10 +101,12 @@ class RiskManager:
         # (meaning 200%) instead of 0.02 can never slip through silently.
         for name, pct in [("max_risk_per_trade_pct", max_risk_per_trade_pct),
                           ("max_daily_loss_pct", max_daily_loss_pct)]:
-            if not 0 < pct <= 1:
-                raise ValueError(f"{name} must be between 0 and 1 (got {pct}).")
-        if max_open_positions < 1:
-            raise ValueError("max_open_positions must be at least 1.")
+            if not is_real_number(pct) or not 0 < pct <= 1:
+                raise ValueError(f"{name} must be a number between 0 and 1 "
+                                 f"(got {pct!r}).")
+        if not is_whole_number(max_open_positions) or max_open_positions < 1:
+            raise ValueError("max_open_positions must be a whole number of "
+                             f"at least 1 (got {max_open_positions!r}).")
 
         self.max_risk_per_trade_pct = max_risk_per_trade_pct
         self.max_daily_loss_pct = max_daily_loss_pct
@@ -115,12 +136,74 @@ class RiskManager:
         The largest position that passes BOTH the risk limit and the cash limit.
         Rounded DOWN to 4 decimals so it never goes over either limit.
         """
-        risk_per_share = entry_price - stop_loss_price
-        if entry_price <= 0 or risk_per_share <= 0:
+        # Any bad input means "don't trade": suggest zero shares.
+        if self.check_account(account):
             return 0.0
+        if not (is_real_number(entry_price) and is_real_number(stop_loss_price)):
+            return 0.0
+        if not 0 < stop_loss_price < entry_price:
+            return 0.0
+        risk_per_share = entry_price - stop_loss_price
         by_risk = self.max_risk_dollars(account) / risk_per_share
         by_cash = account.cash / entry_price
         return int(min(by_risk, by_cash) * 10_000) / 10_000
+
+    # -- Input checks ---------------------------------------------------------
+
+    @staticmethod
+    def check_trade(trade: TradeRequest) -> list[str]:
+        """Return a reason for every problem with the trade's own values."""
+        problems = []
+
+        if not isinstance(trade.symbol, str) or not trade.symbol.strip():
+            problems.append("Symbol must be a ticker such as 'SPY'.")
+
+        # First make sure each value is a real number at all...
+        numbers = [("Share quantity", trade.shares),
+                   ("Entry price", trade.entry_price),
+                   ("Stop-loss price", trade.stop_loss_price)]
+        for label, value in numbers:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                problems.append(f"{label} must be a number (got {value!r}).")
+            elif not math.isfinite(value):
+                problems.append(f"{label} must be a real, finite number "
+                                f"(got {value}).")
+        if problems:
+            return problems
+
+        # ...then check that the numbers make sense for a trade.
+        if trade.shares <= 0:
+            problems.append("Share quantity must be greater than zero.")
+        if trade.entry_price <= 0:
+            problems.append("Entry price must be greater than zero.")
+        if trade.stop_loss_price <= 0 or trade.stop_loss_price >= trade.entry_price:
+            problems.append("Stop-loss must be above $0 and below the entry price.")
+        return problems
+
+    @staticmethod
+    def check_account(account: AccountState) -> list[str]:
+        """
+        Return a reason for every problem with the account snapshot.
+        Bad account data (a bug elsewhere) must block trading, not loosen limits.
+        """
+        problems = []
+        if not is_real_number(account.cash) or account.cash < 0:
+            problems.append(f"Account cash must be $0 or more (got {account.cash!r}).")
+        if not is_real_number(account.equity) or account.equity <= 0:
+            problems.append("Account equity must be more than $0 "
+                            f"(got {account.equity!r}).")
+        elif is_real_number(account.cash) and account.equity < account.cash - TOLERANCE:
+            # equity = cash + positions, so it can never be less than cash.
+            problems.append(f"Account equity (${account.equity:.2f}) cannot be "
+                            f"less than cash (${account.cash:.2f}).")
+        if not is_whole_number(account.open_positions) or account.open_positions < 0:
+            problems.append("Account open positions must be a whole number of "
+                            f"0 or more (got {account.open_positions!r}).")
+        if (not is_real_number(account.realized_loss_today)
+                or account.realized_loss_today < 0):
+            problems.append("Account loss today must be $0 or more "
+                            f"(got {account.realized_loss_today!r}).")
+        return problems
 
     # -- The main check -------------------------------------------------------
 
@@ -132,16 +215,13 @@ class RiskManager:
         reasons = []
 
         # Rule 1: simulation only. No real-money trading, ever.
-        if not account.paper_trading:
+        # `is not True` also blocks look-alikes such as the text "yes".
+        if account.paper_trading is not True:
             reasons.append("Only paper trading is allowed.")
 
-        # Rule 2: the trade itself must make sense.
-        if trade.shares <= 0:
-            reasons.append("Share quantity must be greater than zero.")
-        if trade.entry_price <= 0:
-            reasons.append("Entry price must be greater than zero.")
-        if trade.stop_loss_price <= 0 or trade.stop_loss_price >= trade.entry_price:
-            reasons.append("Stop-loss must be above $0 and below the entry price.")
+        # Rule 2: the trade and the account data must both make sense.
+        reasons += self.check_trade(trade)
+        reasons += self.check_account(account)
 
         # If the inputs are invalid, the dollar math below would be meaningless.
         if reasons:
