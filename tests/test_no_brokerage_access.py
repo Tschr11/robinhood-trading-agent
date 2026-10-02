@@ -26,7 +26,8 @@ CODE_FOLDERS = ["src", "config"]
 # open a network connection. (sqlite3 only reads and writes a local file.)
 # `random` is deliberately NOT allowed: the agent must never make up prices.
 ALLOWED_IMPORTS = {"math", "dataclasses", "datetime", "csv", "os", "abc",
-                   "enum", "sqlite3", "contextlib", "warnings", "config", "src"}
+                   "enum", "sqlite3", "contextlib", "warnings", "json",
+                   "hashlib", "argparse", "config", "src"}
 
 FORBIDDEN_WORDS = ["api_key", "apikey", "secret", "password", "token",
                    "credential", "oauth", "login", "robin_stocks"]

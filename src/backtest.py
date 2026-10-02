@@ -138,6 +138,7 @@ class BacktestTrade:
     commission: float        # entry + exit
     realized_pnl: float      # after slippage and commission
     exit_reason: str
+    slippage_cost: float = 0.0   # dollars lost to slippage (entry + exit)
 
     @property
     def return_pct(self) -> float:
@@ -164,6 +165,7 @@ class BacktestMetrics:
     max_drawdown: float              # dollars, largest peak-to-trough fall
     max_drawdown_pct: float          # 0.25 = 25% below the previous peak
     total_commission: float
+    total_slippage: float = 0.0      # dollars lost to slippage
 
 
 def compute_metrics(trades, equity_values, starting_capital: float) -> BacktestMetrics:
@@ -196,6 +198,7 @@ def compute_metrics(trades, equity_values, starting_capital: float) -> BacktestM
         max_drawdown=max_dd,
         max_drawdown_pct=max_dd_pct,
         total_commission=sum(t.commission for t in trades),
+        total_slippage=sum(t.slippage_cost for t in trades),
     )
 
 
@@ -247,6 +250,7 @@ class BacktestResult:
                else "n/a" if m.profit_factor is None else f"{m.profit_factor:.2f}"),
             f"  Max drawdown      {money(m.max_drawdown)} ({pct(m.max_drawdown_pct)})",
             f"  Commission paid   {money(m.total_commission)}",
+            f"  Slippage cost     {money(m.total_slippage)}",
             f"  Entries rejected  {len(self.rejected_entries)}",
             f"  Orders expired    {len(self.expired_orders)}",
         ]
@@ -304,6 +308,7 @@ class _Position:
     stop_loss_price: float
     take_profit_price: float
     entry_commission: float
+    entry_slippage: float = 0.0
 
 
 @dataclass
@@ -354,14 +359,14 @@ class _Simulation:
             # 4. End of data / end of day.
             if i == last:
                 if self.position:
-                    self._exit(bar.timestamp, self._sell_fill(bar.close), END_OF_DATA)
+                    self._exit(bar.timestamp, bar.close, END_OF_DATA)
                 self._expire_pending("no later candle to fill it")
             elif self.config.flatten_end_of_day and \
                     candles[i + 1].timestamp.date() != self.day:
                 # Only the next candle's DATE is used (the market's closing
                 # time is known in advance) - never its prices.
                 if self.position:
-                    self._exit(bar.timestamp, self._sell_fill(bar.close), SESSION_END)
+                    self._exit(bar.timestamp, bar.close, SESSION_END)
                 self._expire_pending("day ended; no overnight orders")
 
             # 5. Equity at this close.
@@ -403,7 +408,7 @@ class _Simulation:
         if signal is Signal.BUY:
             self._enter(bar, decided_at)
         elif self.position:
-            self._exit(bar.timestamp, self._sell_fill(bar.open), STRATEGY_EXIT)
+            self._exit(bar.timestamp, bar.open, STRATEGY_EXIT)
 
     def _enter(self, bar: Candle, decided_at: datetime) -> None:
         c = self.config
@@ -433,7 +438,8 @@ class _Simulation:
 
         self.cash -= shares * fill + c.commission_per_trade
         self.position = _Position(shares, fill, bar.timestamp, decided_at, stop, target,
-                                  c.commission_per_trade)
+                                  c.commission_per_trade,
+                                  entry_slippage=shares * (fill - bar.open))
 
     # -- Step 2: stop-loss and take-profit ------------------------------------------
 
@@ -444,12 +450,12 @@ class _Simulation:
             # so assume the WORSE outcome: the stop.
             # A gap below the stop fills at the (worse) open price.
             base = bar.open if bar.open <= p.stop_loss_price else p.stop_loss_price
-            self._exit(bar.timestamp, self._sell_fill(base), STOP_LOSS)
+            self._exit(bar.timestamp, base, STOP_LOSS)
         elif bar.high >= p.take_profit_price:
             # A limit order: fills at the target (or a better gap-up open),
             # with no slippage.
             base = bar.open if bar.open >= p.take_profit_price else p.take_profit_price
-            self._exit(bar.timestamp, base, TAKE_PROFIT)
+            self._exit(bar.timestamp, base, TAKE_PROFIT, market_order=False)
 
     # -- Closing a position --------------------------------------------------------------
 
@@ -457,8 +463,11 @@ class _Simulation:
         """A market sell receives a bit less than the quoted price."""
         return price * (1 - self.config.slippage_pct)
 
-    def _exit(self, when: datetime, fill: float, reason: str) -> None:
+    def _exit(self, when: datetime, quoted: float, reason: str,
+              market_order: bool = True) -> None:
+        """Close the position. Market orders pay slippage; limit orders don't."""
         p, commission = self.position, self.config.commission_per_trade
+        fill = self._sell_fill(quoted) if market_order else quoted
         self.cash += p.shares * fill - commission
         pnl = p.shares * (fill - p.entry_price) - p.entry_commission - commission
         if pnl < 0:
@@ -468,7 +477,8 @@ class _Simulation:
             entry_time=p.entry_time, entry_price=p.entry_price, exit_time=when,
             exit_price=fill, shares=p.shares,
             commission=p.entry_commission + commission, realized_pnl=pnl,
-            exit_reason=reason))
+            exit_reason=reason,
+            slippage_cost=p.entry_slippage + p.shares * (quoted - fill)))
         self.position = None
 
     def _expire_pending(self, why: str) -> None:

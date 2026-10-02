@@ -1,0 +1,10 @@
+{
+  "name": "example_baseline",
+  "datasets": [
+    {"symbol": "SPY", "folder": "data/market",
+     "start": "2025-01-02", "end": "2025-12-31", "split_date": "2025-10-01"},
+    {"symbol": "QQQ", "folder": "data/market",
+     "start": "2025-01-02", "end": "2025-12-31", "split_date": "2025-10-01"}
+  ],
+  "backtest": {"commission_per_trade": 0.0, "slippage_pct": 0.0005}
+}

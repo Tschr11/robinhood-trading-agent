@@ -30,8 +30,12 @@ robinhood-trading-agent/
 │   └── settings.py      All goals and risk rules in one place
 ├── data/                paper_account.db + market/<SYMBOL>.csv (git-ignored)
 ├── logs/                Trade journal and run logs
+├── plans/
+│   └── example_plan.json  Example evaluation plan
+├── reports/             Evaluation reports (created on first run, git-ignored)
 ├── src/
 │   ├── backtest.py      Historical backtesting engine (separate from paper trading)
+│   ├── evaluation.py    Repeatable in-sample / out-of-sample evaluation
 │   ├── main.py          Prints one round of strategy signals (no trades)
 │   ├── market_data/     Market Data Engine
 │   │   ├── candles.py       Candle (OHLCV), DataKind (historical/live), errors
@@ -53,6 +57,7 @@ robinhood-trading-agent/
     ├── test_market_data.py              Validation, indicators, providers
     ├── test_strategy.py                 Every entry, exit, hold and data rule
     ├── test_backtest.py                 Chronology, look-ahead, costs, exits, metrics
+    ├── test_evaluation.py               Date splits, reproducibility, benchmark, reports
     ├── market_fixtures.py               Locally generated test candles
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
@@ -127,6 +132,10 @@ dict such as {"SPY": 494.00}, built by market_data.latest_prices().
 - **`src/backtest.py`** - Replays historical candles through the strategy in
   time order with its own in-memory pretend account. It never touches the
   paper account, its database or the journal. See "Backtesting" below.
+- **`src/evaluation.py`** - Runs a JSON plan: splits each CSV dataset into
+  in-sample and out-of-sample periods by date, backtests each period
+  separately, compares it with buy-and-hold over the same candles, and saves
+  JSON + text reports in `reports/`. See "Evaluating the strategy" below.
 - **`src/journal.py`** - Appends each decision and transaction to
   `logs/trade_journal.csv` (with realized P&L and cash afterwards) so you can
   review what the agent did and why.
@@ -330,6 +339,80 @@ is shown as `n/a`, never as an invented number.
 - **Speed.** Each candle re-validates and re-computes over its window, which
   is simple and safe but slow for very long histories.
 - **Pattern-day-trader rules, settlement and taxes are not modeled.**
+
+## Evaluating the strategy
+
+The evaluation measures the **current** `trend_vwap_v1` exactly as configured.
+It does not tune, search or change any threshold, and a plan file is not
+allowed to set strategy thresholds.
+
+```
+python -m src.evaluation plans/example_plan.json --in-sample-only
+python -m src.evaluation plans/example_plan.json
+```
+
+A plan lists datasets (one CSV per symbol and folder), optional date ranges,
+a split date, and optional backtest *assumptions* such as costs:
+
+```json
+{
+  "name": "example_baseline",
+  "datasets": [
+    {"symbol": "SPY", "folder": "data/market",
+     "start": "2025-01-02", "end": "2025-12-31", "split_date": "2025-10-01"}
+  ],
+  "backtest": {"commission_per_trade": 0.0, "slippage_pct": 0.0005}
+}
+```
+
+**In-sample vs. out-of-sample.** Each dataset is cut to `[start, end]`
+(inclusive calendar dates). Dates **before** `split_date` are in-sample;
+dates **on or after** it are out-of-sample. A trading day is never split, the
+periods never overlap, and each period is backtested **only with its own
+candles** (its first 50 candles are indicator warm-up, with no trades).
+
+How to use the split honestly:
+1. Explore with `--in-sample-only`. The out-of-sample candles are not even
+   loaded into a backtest.
+2. Run the full evaluation **once** when you are done deciding.
+3. If you then change the strategy because of out-of-sample results, that
+   period is no longer out-of-sample. Each report shows **how many earlier
+   out-of-sample runs** exist for the same plan and data, so repeated peeking
+   is visible.
+
+**Benchmark.** Buy-and-hold buys at the open of the first candle the strategy
+could trade (right after warm-up) and sells at the period's last close, with
+the same starting capital, slippage, commission and fractional-share rule.
+
+**Report contents** (for each dataset and period, strategy vs. buy-and-hold):
+total return, maximum drawdown, win rate, profit factor, number of trades,
+average winning and losing trade, total commission and total slippage. The
+summary counts in how many periods the strategy beat buy-and-hold; it does
+not combine returns across datasets.
+
+**Reproducibility.** Every report records the full plan, the strategy and
+backtest settings, and a SHA-256 fingerprint of each CSV file. The same plan
+on the same files gives identical results; only the generation time differs.
+
+**Where reports go.** `reports/<plan>_<time>.json` and `.txt`. Existing reports
+are never overwritten. Saving into `data/` (paper account) or `logs/`
+(journal) is refused. A missing or invalid dataset is reported as an error
+while the other datasets still run.
+
+### Assumptions and limitations of the comparison
+
+- Buy-and-hold stays invested overnight; the strategy exits every day and is
+  out of the market most of the time. They take **different risks**, and the
+  returns shown are **not risk-adjusted**.
+- No statistical significance test is done. A difference between the strategy
+  and buy-and-hold may be pure chance, especially with few trades.
+- A short out-of-sample period is very noisy. One evaluation on one stretch of
+  history is **not evidence of future profitability**.
+- Costs and fills follow the backtester's assumptions (see "Backtesting").
+- Results are only as good as your CSV data (splits, dividends, missing
+  candles and survivorship bias are not adjusted).
+- Each period re-starts with fresh capital and its own warm-up, so the
+  out-of-sample period loses its first 50 candles to warm-up.
 
 ## Simulated fills vs. real market execution
 

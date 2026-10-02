@@ -66,6 +66,9 @@ DATA_DIR = "data"
 # the agent never invents prices.
 MARKET_DATA_DIR = "data/market"
 LOG_DIR = "logs"
+# Evaluation reports (src/evaluation.py) - kept apart from the paper account
+# in data/ and the journal in logs/.
+REPORTS_DIR = "reports"
 JOURNAL_FILE = "logs/trade_journal.csv"
 # The saved paper account (cash, positions, P&L). Delete this file to start
 # over with a fresh $25 account. It holds no credentials - only pretend money.
