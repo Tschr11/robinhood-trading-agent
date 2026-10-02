@@ -7,3 +7,7 @@
 # pandas        # tables of price data
 # pytest        # running the tests in tests/
 # streamlit     # beginner-friendly dashboard
+#
+# Time zones use Python's built-in zoneinfo. Linux and macOS already have the
+# time-zone rules it needs. On Windows, install this one small package:
+# tzdata        # America/New_York time-zone rules for zoneinfo (Windows only)

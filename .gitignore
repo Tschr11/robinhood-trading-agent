@@ -22,6 +22,7 @@ data/*
 logs/*
 !logs/.gitkeep
 reports/
+historical_data/
 
 # Editors / OS
 .vscode/

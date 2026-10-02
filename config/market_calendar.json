@@ -1,0 +1,119 @@
+{
+  "calendar": "XNYS",
+  "description": "NYSE regular-trading-hours calendar for US equities. Only the years listed are covered; any other year is refused, never assumed to be a normal year.",
+  "version": "2026-10-02.1",
+  "timezone": "America/New_York",
+  "regular_session": {"open": "09:30", "close": "16:00"},
+  "verification_instructions": "Each year is 'verified': false until a person compares it with the official NYSE/ICE documents listed in its 'sources' and sets 'verified' to true (and fills 'verified_by' and 'verified_on'). The dates below were transcribed from search-engine excerpts of those official documents; the documents themselves could not be opened from the build environment. Unverified years are refused unless allow_unverified=True is passed explicitly.",
+  "years": {
+    "2023": {
+      "verified": false,
+      "verified_by": null,
+      "verified_on": null,
+      "sources": [
+        "https://ir.theice.com/press/news-details/2022/NYSE-Group-Announces-2023-2024-and-2025-Holiday-and-Early-Closings-Calendar/default.aspx",
+        "https://www.nyse.com/publicdocs/ICE_NYSE_2023_Yearly_Trading_Calendar.pdf"
+      ],
+      "holidays": [
+        {"date": "2023-01-02", "name": "New Year's Day (observed)"},
+        {"date": "2023-01-16", "name": "Martin Luther King, Jr. Day"},
+        {"date": "2023-02-20", "name": "Washington's Birthday"},
+        {"date": "2023-04-07", "name": "Good Friday"},
+        {"date": "2023-05-29", "name": "Memorial Day"},
+        {"date": "2023-06-19", "name": "Juneteenth National Independence Day"},
+        {"date": "2023-07-04", "name": "Independence Day"},
+        {"date": "2023-09-04", "name": "Labor Day"},
+        {"date": "2023-11-23", "name": "Thanksgiving Day"},
+        {"date": "2023-12-25", "name": "Christmas Day"}
+      ],
+      "special_closures": [],
+      "early_closes": [
+        {"date": "2023-07-03", "close": "13:00", "name": "Day before Independence Day"},
+        {"date": "2023-11-24", "close": "13:00", "name": "Day after Thanksgiving"}
+      ]
+    },
+    "2024": {
+      "verified": false,
+      "verified_by": null,
+      "verified_on": null,
+      "sources": [
+        "https://ir.theice.com/press/news-details/2023/NYSE-Group-Announces-2024-2025-and-2026-Holiday-and-Early-Closings-Calendar/default.aspx",
+        "https://www.nyse.com/publicdocs/ICE_NYSE_2024_Yearly_Trading_Calendar.pdf"
+      ],
+      "holidays": [
+        {"date": "2024-01-01", "name": "New Year's Day"},
+        {"date": "2024-01-15", "name": "Martin Luther King, Jr. Day"},
+        {"date": "2024-02-19", "name": "Washington's Birthday"},
+        {"date": "2024-03-29", "name": "Good Friday"},
+        {"date": "2024-05-27", "name": "Memorial Day"},
+        {"date": "2024-06-19", "name": "Juneteenth National Independence Day"},
+        {"date": "2024-07-04", "name": "Independence Day"},
+        {"date": "2024-09-02", "name": "Labor Day"},
+        {"date": "2024-11-28", "name": "Thanksgiving Day"},
+        {"date": "2024-12-25", "name": "Christmas Day"}
+      ],
+      "special_closures": [],
+      "early_closes": [
+        {"date": "2024-07-03", "close": "13:00", "name": "Day before Independence Day"},
+        {"date": "2024-11-29", "close": "13:00", "name": "Day after Thanksgiving"},
+        {"date": "2024-12-24", "close": "13:00", "name": "Christmas Eve"}
+      ]
+    },
+    "2025": {
+      "verified": false,
+      "verified_by": null,
+      "verified_on": null,
+      "sources": [
+        "https://ir.theice.com/press/news-details/2024/NYSE-Group-Announces-2025-2026-and-2027-Holiday-and-Early-Closings-Calendar/default.aspx",
+        "https://www.nyse.com/publicdocs/ICE_NYSE_2025_Yearly_Trading_Calendar.pdf",
+        "https://ir.theice.com/press/news-details/2024/The-New-York-Stock-Exchange-Will-Close-Markets-on-January-9-to-Honor-the-Passing-of-Former-President-Jimmy-Carter-on-National-Day-of-Mourning/default.aspx"
+      ],
+      "holidays": [
+        {"date": "2025-01-01", "name": "New Year's Day"},
+        {"date": "2025-01-20", "name": "Martin Luther King, Jr. Day"},
+        {"date": "2025-02-17", "name": "Washington's Birthday"},
+        {"date": "2025-04-18", "name": "Good Friday"},
+        {"date": "2025-05-26", "name": "Memorial Day"},
+        {"date": "2025-06-19", "name": "Juneteenth National Independence Day"},
+        {"date": "2025-07-04", "name": "Independence Day"},
+        {"date": "2025-09-01", "name": "Labor Day"},
+        {"date": "2025-11-27", "name": "Thanksgiving Day"},
+        {"date": "2025-12-25", "name": "Christmas Day"}
+      ],
+      "special_closures": [
+        {"date": "2025-01-09", "name": "National Day of Mourning for former President Jimmy Carter"}
+      ],
+      "early_closes": [
+        {"date": "2025-07-03", "close": "13:00", "name": "Day before Independence Day"},
+        {"date": "2025-11-28", "close": "13:00", "name": "Day after Thanksgiving"},
+        {"date": "2025-12-24", "close": "13:00", "name": "Christmas Eve"}
+      ]
+    },
+    "2026": {
+      "verified": false,
+      "verified_by": null,
+      "verified_on": null,
+      "sources": [
+        "https://ir.theice.com/press/news-details/2025/NYSE-Group-Announces-2026-2027-and-2028-Holiday-and-Early-Closings-Calendar/default.aspx",
+        "https://www.nyse.com/publicdocs/nyse/ICE_NYSE_2026_Yearly_Trading_Calendar.pdf"
+      ],
+      "holidays": [
+        {"date": "2026-01-01", "name": "New Year's Day"},
+        {"date": "2026-01-19", "name": "Martin Luther King, Jr. Day"},
+        {"date": "2026-02-16", "name": "Washington's Birthday"},
+        {"date": "2026-04-03", "name": "Good Friday"},
+        {"date": "2026-05-25", "name": "Memorial Day"},
+        {"date": "2026-06-19", "name": "Juneteenth National Independence Day"},
+        {"date": "2026-07-03", "name": "Independence Day (observed)"},
+        {"date": "2026-09-07", "name": "Labor Day"},
+        {"date": "2026-11-26", "name": "Thanksgiving Day"},
+        {"date": "2026-12-25", "name": "Christmas Day"}
+      ],
+      "special_closures": [],
+      "early_closes": [
+        {"date": "2026-11-27", "close": "13:00", "name": "Day after Thanksgiving"},
+        {"date": "2026-12-24", "close": "13:00", "name": "Christmas Eve"}
+      ]
+    }
+  }
+}

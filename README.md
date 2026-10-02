@@ -27,8 +27,10 @@ robinhood-trading-agent/
 ├── requirements.txt     Python packages (none needed yet)
 ├── .gitignore           Files Git should not track (secrets, logs, data)
 ├── config/
-│   └── settings.py      All goals and risk rules in one place
+│   ├── settings.py      All goals and risk rules in one place
+│   └── market_calendar.json  NYSE trading calendar (versioned, per-year verification)
 ├── data/                paper_account.db + market/<SYMBOL>.csv (git-ignored)
+├── historical_data/     Imported historical market data (git-ignored; importer coming)
 ├── logs/                Trade journal and run logs
 ├── plans/
 │   └── example_plan.json  Example evaluation plan
@@ -42,6 +44,7 @@ robinhood-trading-agent/
 │   │   ├── validation.py    Rejects bad candles - never repairs them
 │   │   ├── dataset.py       MarketDataSet: validated + labelled candles
 │   │   ├── indicators.py    SMA 20/50, RSI 14, VWAP, average volume
+│   │   ├── sessions.py      New York time, NYSE calendar, regular-session bar grid
 │   │   └── providers.py     Provider interface + offline CSV provider
 │   ├── strategy.py      Rules-based BUY / SELL / HOLD with explanations
 │   ├── risk_manager.py  Approves or blocks each trade against the rules
@@ -58,6 +61,7 @@ robinhood-trading-agent/
     ├── test_strategy.py                 Every entry, exit, hold and data rule
     ├── test_backtest.py                 Chronology, look-ahead, costs, exits, metrics
     ├── test_evaluation.py               Date splits, reproducibility, benchmark, reports
+    ├── test_sessions.py                 Calendar, time zones, DST, session grid
     ├── market_fixtures.py               Locally generated test candles
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
@@ -229,6 +233,37 @@ timestamp,open,high,low,close,volume
 
 **Historical is not live.** CSV data is labelled `historical`. Prices in a
 file can be minutes or years old; never treat them as current market quotes.
+
+## Historical data conventions (in progress)
+
+Historical market data will be imported **offline** from files you obtain
+yourself (no downloader, no API keys, no network access in this project) into
+a separate, git-ignored `historical_data/` folder. The importer is not built
+yet; the time and calendar rules it will enforce are:
+
+- **Regular trading hours only:** 09:30-16:00 America/New_York, and the
+  official NYSE early closes (13:00).
+- **Bar-start timestamps with New York's own UTC offset:** the 09:30-09:35 bar
+  is `2026-01-05T09:30:00-05:00` in winter and `2026-07-06T09:30:00-04:00` in
+  summer. A timestamp whose offset doesn't match New York's offset at that
+  moment is rejected, as is one without a time zone.
+- **Bars must sit on the grid** (1, 5, 15 or 30 minutes from 09:30) and fit
+  entirely inside the session: with 5-minute bars the last bar is 15:55 (12:55
+  on an early close). Bars on weekends, holidays or unscheduled closures are
+  rejected.
+
+**Market calendar.** `config/market_calendar.json` lists, per year, the NYSE
+holidays, unscheduled closures (such as 9 January 2025) and early closes, with
+links to the official NYSE / ICE announcements. It is versioned, and it covers
+only the years it lists (currently 2023-2026). Any other year is refused -
+never treated as a normal year.
+
+Every year starts as `"verified": false`, because the dates were transcribed
+from search excerpts of the official documents (the documents could not be
+opened from the build environment). **Unverified years are refused** unless a
+caller explicitly passes `allow_unverified=True`. To verify a year: open the
+links in its `sources`, compare every holiday, closure and early close, then
+set `"verified": true`, `"verified_by"` and `"verified_on"`.
 
 ## Your saved paper account
 

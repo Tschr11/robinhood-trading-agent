@@ -27,7 +27,7 @@ CODE_FOLDERS = ["src", "config"]
 # `random` is deliberately NOT allowed: the agent must never make up prices.
 ALLOWED_IMPORTS = {"math", "dataclasses", "datetime", "csv", "os", "abc",
                    "enum", "sqlite3", "contextlib", "warnings", "json",
-                   "hashlib", "argparse", "config", "src"}
+                   "hashlib", "argparse", "zoneinfo", "config", "src"}
 
 FORBIDDEN_WORDS = ["api_key", "apikey", "secret", "password", "token",
                    "credential", "oauth", "login", "robin_stocks"]

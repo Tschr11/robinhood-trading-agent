@@ -65,6 +65,13 @@ DATA_DIR = "data"
 # (columns: timestamp,open,high,low,close,volume). You supply these files;
 # the agent never invents prices.
 MARKET_DATA_DIR = "data/market"
+# Imported historical market data (raw source files, canonical CSVs and their
+# manifests) lives in its own top-level folder, apart from the paper account
+# (data/), the journal (logs/) and evaluation reports (reports/). Git-ignored.
+HISTORICAL_DATA_DIR = "historical_data"
+# Exchange calendar for regular trading hours (America/New_York). Every year
+# in it is versioned and must be marked verified before it can be used.
+MARKET_CALENDAR_FILE = "config/market_calendar.json"
 LOG_DIR = "logs"
 # Evaluation reports (src/evaluation.py) - kept apart from the paper account
 # in data/ and the journal in logs/.
