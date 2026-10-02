@@ -293,8 +293,19 @@ trade, or equity value.
 | `commission_per_trade` | $0.00 | charged on entry and on exit |
 | `slippage_pct` | 0.05% | market orders fill this much worse |
 | `flatten_end_of_day` | on | exit at each day's last close |
-| `warmup_candles` | 50 | history needed before the first decision |
-| `lookback_candles` | 500 | how many recent candles the strategy sees each step |
+| `warmup_candles` | 50 | history needed before the first decision (minimum 50) |
+| `lookback_candles` | 500 | how many recent candles the strategy sees each step (minimum 50) |
+
+Values below 50 are rejected: the strategy's SMA 50 needs 50 candles, so a
+smaller warm-up or lookback would only ever produce HOLD.
+
+**History before the test period.** `run_backtest(..., trade_start=...)` treats
+candles before `trade_start` as history only: they warm up indicators such as
+RSI, but the strategy is never asked on them, nothing is bought or sold, and
+they are not part of the equity curve or metrics. The first decision is at
+the close of the first candle on or after `trade_start`, so the first possible
+fill is the next candle's open. The backtester and the buy-and-hold benchmark
+use the same rule (`first_tradable_index`) to find that first tradable candle.
 
 Fill rules:
 - **Entries and strategy exits** are market orders at the next open, with slippage.
@@ -309,10 +320,21 @@ Fill rules:
 ### Metrics
 
 Total return, win rate, average winning trade, average losing trade, profit
-factor (total won / total lost), maximum drawdown (largest fall from a
-previous high, in dollars and %), and number of trades. Every trade records
-entry/exit time and price, size, commission, realized P&L and exit reason.
-A metric that can't be calculated (e.g. profit factor with no losing trades)
+factor (total won / total lost), and number of trades. Drawdown is reported
+two ways, each describing ONE fall from one peak to one trough:
+- **Max $ drawdown** - the largest fall in dollars, with that same fall as a
+  % of its own peak;
+- **Max % drawdown** - the largest fall in %, with that same fall in dollars.
+  This can be a different fall (for example an early 40% drop on a small
+  balance vs. a later, bigger-dollar but smaller-% drop).
+
+**Costs are already included.** Commission and slippage are already included
+in every return, P&L and drawdown figure, because the simulated fills and cash
+include them. The commission and slippage totals only show how much they took;
+they must not be subtracted again.
+
+Every trade records entry/exit time and price, size, commission, slippage
+cost, realized P&L and exit reason. A metric that can't be calculated (e.g. profit factor with no losing trades)
 is shown as `n/a`, never as an invented number.
 
 ### Limitations - please read
@@ -367,32 +389,65 @@ a split date, and optional backtest *assumptions* such as costs:
 
 **In-sample vs. out-of-sample.** Each dataset is cut to `[start, end]`
 (inclusive calendar dates). Dates **before** `split_date` are in-sample;
-dates **on or after** it are out-of-sample. A trading day is never split, the
-periods never overlap, and each period is backtested **only with its own
-candles** (its first 50 candles are indicator warm-up, with no trades).
+dates **on or after** it are out-of-sample. A trading day is never split and
+the periods never overlap. Each period is backtested separately. Up to
+`lookback_candles` candles from **before** the period (same file) are used only
+to warm up indicators - for the out-of-sample period these are in-sample
+candles, which are earlier in time, so there is no look-ahead and nothing is
+fitted to them. No decision, trade or equity value happens before the
+period's first candle. If no earlier candles exist (e.g. at the start of the
+file), the period's own first 50 candles are the warm-up.
 
 How to use the split honestly:
-1. Explore with `--in-sample-only`. The out-of-sample candles are not even
-   loaded into a backtest.
+1. Explore with `--in-sample-only`. The out-of-sample candles are never put
+   into a backtest (the whole CSV file is still read and validated).
 2. Run the full evaluation **once** when you are done deciding.
 3. If you then change the strategy because of out-of-sample results, that
-   period is no longer out-of-sample. Each report shows **how many earlier
-   out-of-sample runs** exist for the same plan and data, so repeated peeking
-   is visible.
+   period is no longer out-of-sample.
 
-**Benchmark.** Buy-and-hold buys at the open of the first candle the strategy
-could trade (right after warm-up) and sells at the period's last close, with
-the same starting capital, slippage, commission and fractional-share rule.
+**Out-of-sample count.** Every saved report that evaluated a dataset's
+out-of-sample period adds a line to an append-only exposure log,
+`reports/oos_exposure_log.jsonl` (`--exposure-log` to change it). Each report
+shows, per dataset, how many earlier **saved** out-of-sample evaluations of
+that exact dataset period exist. A dataset period is identified by its
+symbol, the SHA-256 fingerprint of the CSV file, the split date and the end
+date (the plan's `end`, or the file's last candle date).
+
+What the count **can** detect: repeated saved evaluations of the same dataset
+period, even if the plan is renamed, costs change, other datasets are added,
+or reports go to a different folder.
+
+What it **cannot** detect:
+- evaluations that were never saved (e.g. calling `evaluate()` from Python
+  without `save_report()`), or saved with a different exposure log;
+- looks at overlapping but different periods (another split or end date);
+- the same prices in an edited or re-saved CSV (it gets a new fingerprint);
+- looking at the data any other way (charts, spreadsheets);
+- deleting or editing the log. A damaged log line stops the evaluation with
+  an error rather than silently resetting the count.
+
+**Benchmark.** Buy-and-hold buys at the open of the first candle on which the
+strategy is permitted to trade (the same `first_tradable_index` rule the
+backtester uses) and sells at the period's last close, with the same starting
+capital, slippage, commission and fractional-share rule.
 
 **Report contents** (for each dataset and period, strategy vs. buy-and-hold):
-total return, maximum drawdown, win rate, profit factor, number of trades,
-average winning and losing trade, total commission and total slippage. The
-summary counts in how many periods the strategy beat buy-and-hold; it does
-not combine returns across datasets.
+total return, max $ drawdown, max % drawdown, win rate, profit factor,
+number of trades, average winning and losing trade, total commission and
+total slippage. Commission and slippage are already included in the returns
+and must not be subtracted again. The summary counts in how many periods the
+strategy beat buy-and-hold; it does not combine returns across datasets.
 
 **Reproducibility.** Every report records the full plan, the strategy and
-backtest settings, and a SHA-256 fingerprint of each CSV file. The same plan
-on the same files gives identical results; only the generation time differs.
+backtest settings, a SHA-256 fingerprint of each CSV file, and a **code
+fingerprint**: SHA-256 hashes of `src/strategy.py`, `src/backtest.py`,
+`src/evaluation.py`, `src/risk_manager.py` and `src/market_data/*.py`. The code
+fingerprint identifies those source files only - not the Python version,
+operating system, installed packages or `config/settings.py` (the relevant
+settings are recorded separately). The same plan on the same files and code
+gives the same results. Between runs, the generation time and the
+out-of-sample counts differ: the counts grow each time a report with an
+out-of-sample evaluation is saved.
 
 **Where reports go.** `reports/<plan>_<time>.json` and `.txt`. Existing reports
 are never overwritten. Saving into `data/` (paper account) or `logs/`
@@ -411,8 +466,10 @@ while the other datasets still run.
 - Costs and fills follow the backtester's assumptions (see "Backtesting").
 - Results are only as good as your CSV data (splits, dividends, missing
   candles and survivorship bias are not adjusted).
-- Each period re-starts with fresh capital and its own warm-up, so the
-  out-of-sample period loses its first 50 candles to warm-up.
+- Each period re-starts with fresh capital. With earlier candles available,
+  the out-of-sample period can trade from its second candle; without them
+  (e.g. an in-sample period at the start of the file), its first 50 candles
+  are warm-up only.
 
 ## Simulated fills vs. real market execution
 

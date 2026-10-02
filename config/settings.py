@@ -69,6 +69,10 @@ LOG_DIR = "logs"
 # Evaluation reports (src/evaluation.py) - kept apart from the paper account
 # in data/ and the journal in logs/.
 REPORTS_DIR = "reports"
+# Append-only record of SAVED out-of-sample evaluations, used to count how
+# often each dataset's out-of-sample period has been looked at. It does not
+# depend on the plan name or the report folder.
+OOS_EXPOSURE_LOG = "reports/oos_exposure_log.jsonl"
 JOURNAL_FILE = "logs/trade_journal.csv"
 # The saved paper account (cash, positions, P&L). Delete this file to start
 # over with a fresh $25 account. It holds no credentials - only pretend money.

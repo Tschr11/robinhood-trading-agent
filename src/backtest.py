@@ -24,6 +24,13 @@ How each candle (bar) is processed, in time order:
 This ordering is what prevents "look-ahead bias": no decision can use a
 price that would not have been known at that moment.
 
+History before the test period (trade_start):
+    Candles before `trade_start` are HISTORY ONLY. They are shown to the
+    strategy so indicators such as RSI start from a realistic value, but on
+    those candles the strategy is never asked, nothing is bought or sold, and
+    no equity is recorded. Trading decisions begin at the close of the first
+    candle on or after `trade_start`.
+
 IMPORTANT: a backtest shows how fixed rules interacted with ONE stretch of
 past data. It is not a prediction, and a good result in one backtest is
 not evidence that the strategy will make money.
@@ -112,8 +119,13 @@ class BacktestConfig:
                 problems.append(f"{label} must be True or False.")
         for label in ["warmup_candles", "lookback_candles"]:
             value = getattr(self, label)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                problems.append(f"{label} must be a whole number of at least 1.")
+            if isinstance(value, bool) or not isinstance(value, int):
+                problems.append(f"{label} must be a whole number (got {value!r}).")
+            elif value < MIN_CANDLES_FOR_INDICATORS:
+                problems.append(
+                    f"{label} must be at least {MIN_CANDLES_FOR_INDICATORS} (got {value}): "
+                    f"the strategy's SMA {MIN_CANDLES_FOR_INDICATORS} needs that many "
+                    "candles, so a smaller value would only produce HOLD signals.")
         if not problems and self.lookback_candles < self.warmup_candles:
             problems.append("lookback_candles must be at least warmup_candles.")
         if problems:
@@ -162,10 +174,35 @@ class BacktestMetrics:
     average_win: float | None        # dollars
     average_loss: float | None       # dollars (negative)
     profit_factor: float | None      # total won / total lost
-    max_drawdown: float              # dollars, largest peak-to-trough fall
-    max_drawdown_pct: float          # 0.25 = 25% below the previous peak
+    # The largest fall in DOLLARS, and that SAME fall as a % of its own peak.
+    max_drawdown: float
+    max_drawdown_pct: float          # 0.25 = 25% below that fall's peak
     total_commission: float
     total_slippage: float = 0.0      # dollars lost to slippage
+    # The largest fall in PERCENT, and that SAME fall in dollars. This can be
+    # a different fall from max_drawdown (e.g. an early -40% on a small
+    # balance vs. a later, bigger-dollar but smaller-% drop).
+    largest_pct_drawdown: float = 0.0
+    largest_pct_drawdown_dollars: float = 0.0
+
+
+def drawdowns(equity_values, starting_capital: float) -> tuple[float, float, float, float]:
+    """
+    Peak-to-trough falls in the equity curve, measured from the starting
+    capital. Returns (largest $ fall, its %, largest % fall, its $), where
+    each pair describes ONE fall from one peak to one trough.
+    """
+    peak = starting_capital
+    max_dd, max_dd_pct, top_pct, top_pct_dollars = 0.0, 0.0, 0.0, 0.0
+    for value in equity_values:
+        peak = max(peak, value)
+        drop = peak - value
+        drop_pct = drop / peak if peak > 0 else 0.0
+        if drop > max_dd:
+            max_dd, max_dd_pct = drop, drop_pct
+        if drop_pct > top_pct:
+            top_pct, top_pct_dollars = drop_pct, drop
+    return max_dd, max_dd_pct, top_pct, top_pct_dollars
 
 
 def compute_metrics(trades, equity_values, starting_capital: float) -> BacktestMetrics:
@@ -175,14 +212,7 @@ def compute_metrics(trades, equity_values, starting_capital: float) -> BacktestM
     losers = [p for p in pnls if p < 0]          # exactly $0 counts as neither
     final_equity = equity_values[-1] if equity_values else starting_capital
 
-    peak, max_dd, max_dd_pct = starting_capital, 0.0, 0.0
-    for value in equity_values:
-        peak = max(peak, value)
-        drop = peak - value
-        if drop > max_dd:
-            max_dd = drop
-        if peak > 0 and drop / peak > max_dd_pct:
-            max_dd_pct = drop / peak
+    max_dd, max_dd_pct, top_pct, top_pct_dollars = drawdowns(equity_values, starting_capital)
 
     return BacktestMetrics(
         starting_capital=starting_capital,
@@ -199,6 +229,8 @@ def compute_metrics(trades, equity_values, starting_capital: float) -> BacktestM
         max_drawdown_pct=max_dd_pct,
         total_commission=sum(t.commission for t in trades),
         total_slippage=sum(t.slippage_cost for t in trades),
+        largest_pct_drawdown=top_pct,
+        largest_pct_drawdown_dollars=top_pct_dollars,
     )
 
 
@@ -248,9 +280,12 @@ class BacktestResult:
             f"  Profit factor     "
             + ("n/a (no losing trades)" if m.profit_factor is None and m.number_of_trades
                else "n/a" if m.profit_factor is None else f"{m.profit_factor:.2f}"),
-            f"  Max drawdown      {money(m.max_drawdown)} ({pct(m.max_drawdown_pct)})",
-            f"  Commission paid   {money(m.total_commission)}",
-            f"  Slippage cost     {money(m.total_slippage)}",
+            f"  Max $ drawdown    {money(m.max_drawdown)} "
+            f"({pct(m.max_drawdown_pct)} of that fall's peak)",
+            f"  Max % drawdown    {pct(m.largest_pct_drawdown)} "
+            f"({money(m.largest_pct_drawdown_dollars)})",
+            f"  Commission paid   {money(m.total_commission)} (already in the return)",
+            f"  Slippage cost     {money(m.total_slippage)} (already in the return)",
             f"  Entries rejected  {len(self.rejected_entries)}",
             f"  Orders expired    {len(self.expired_orders)}",
         ]
@@ -267,11 +302,35 @@ class BacktestResult:
 
 # --- Running a backtest -----------------------------------------------------------------
 
+def first_tradable_index(candles, warmup_candles: int, trade_start: datetime | None = None) -> int:
+    """
+    Index of the first candle on which a simulated order can FILL.
+
+    The first decision happens at the close of candle d, where d is the later
+    of (a) the first candle on or after `trade_start` and (b) the candle that
+    completes `warmup_candles` of history. Orders fill at the next open, so
+    the answer is d + 1. Warm-up is never treated as less than the strategy's
+    minimum, even if a caller bypasses validation.
+
+    The backtester and the buy-and-hold benchmark both use this, so they
+    always start on the same candle.
+    """
+    warmup = max(warmup_candles, MIN_CANDLES_FOR_INDICATORS)
+    first_period_candle = 0
+    if trade_start is not None:
+        first_period_candle = next((i for i, c in enumerate(candles)
+                                    if c.timestamp >= trade_start), len(candles))
+    return max(first_period_candle, warmup - 1) + 1
+
+
 def run_backtest(dataset: MarketDataSet, config: BacktestConfig = DEFAULT_CONFIG,
                  strategy_config: StrategyConfig = strategy.DEFAULT_CONFIG,
-                 strategy_fn=None) -> BacktestResult:
+                 strategy_fn=None, trade_start: datetime | None = None) -> BacktestResult:
     """
     Replay `dataset` (HISTORICAL candles, oldest first) through the strategy.
+
+    trade_start  optional: candles before this time are indicator history
+                 only - never traded, never in the equity curve or metrics.
 
     strategy_fn  optional replacement for strategy.evaluate - mainly for
                  tests. It is called exactly like strategy.evaluate and must
@@ -283,11 +342,16 @@ def run_backtest(dataset: MarketDataSet, config: BacktestConfig = DEFAULT_CONFIG
     dataset.require_kind(DataKind.HISTORICAL)          # never backtest "live" data
     if not isinstance(config, BacktestConfig):
         raise BacktestError("config must be a BacktestConfig.")
-    if len(dataset) < config.warmup_candles + 1:
+    if trade_start is not None and (not isinstance(trade_start, datetime)
+                                    or trade_start.utcoffset() is None):
+        raise BacktestError("trade_start must be a datetime with a time zone.")
+    if first_tradable_index(dataset.candles, config.warmup_candles,
+                            trade_start) >= len(dataset):
         raise InsufficientDataError(
-            f"{dataset.symbol}: a backtest needs at least {config.warmup_candles + 1} "
-            f"candles ({config.warmup_candles} of warm-up history plus one to trade "
-            f"on), but {dataset.source} has {len(dataset)}.")
+            f"{dataset.symbol}: a backtest needs at least {config.warmup_candles} "
+            "candles of warm-up history plus at least one more candle to trade on "
+            f"(in the trading period), but {dataset.source} has {len(dataset)} "
+            "candles in total.")
 
     if strategy_fn is None:
         def strategy_fn(view, **kwargs):
@@ -296,7 +360,7 @@ def run_backtest(dataset: MarketDataSet, config: BacktestConfig = DEFAULT_CONFIG
     else:
         name = getattr(strategy_fn, "name", "custom")
 
-    return _Simulation(dataset, config, strategy_fn, name).run()
+    return _Simulation(dataset, config, strategy_fn, name, trade_start).run()
 
 
 @dataclass
@@ -318,6 +382,7 @@ class _Simulation:
     config: BacktestConfig
     strategy_fn: object
     strategy_name: str
+    trade_start: datetime | None = None
     cash: float = 0.0
     position: _Position | None = None
     pending: tuple | None = None              # (Signal, decided_at)
@@ -339,7 +404,11 @@ class _Simulation:
     def run(self) -> BacktestResult:
         candles = self.dataset.candles
         last = len(candles) - 1
+        trading = []                                     # candles inside the period
         for i, bar in enumerate(candles):
+            if self.trade_start is not None and bar.timestamp < self.trade_start:
+                continue        # history only: no decisions, fills or equity
+            trading.append(bar)
             if bar.timestamp.date() != self.day:          # a new trading day
                 self.day = bar.timestamp.date()
                 self.loss_today = 0.0
@@ -376,8 +445,8 @@ class _Simulation:
         return BacktestResult(
             label=LABEL, symbol=self.dataset.symbol, source=self.dataset.source,
             strategy=self.strategy_name, config=self.config,
-            first_candle=candles[0].timestamp, last_candle=candles[-1].timestamp,
-            candles=len(candles), trades=tuple(self.trades),
+            first_candle=trading[0].timestamp, last_candle=trading[-1].timestamp,
+            candles=len(trading), trades=tuple(self.trades),
             equity_curve=tuple(self.equity),
             metrics=compute_metrics(self.trades, [v for _, v in self.equity],
                                     self.config.starting_capital),
