@@ -30,13 +30,14 @@ robinhood-trading-agent/
 │   ├── settings.py      All goals and risk rules in one place
 │   └── market_calendar.json  NYSE trading calendar (versioned, per-year verification)
 ├── data/                paper_account.db + market/<SYMBOL>.csv (git-ignored)
-├── historical_data/     Imported historical market data (git-ignored; importer coming)
+├── historical_data/     Imported historical data: raw/ copies + datasets/ (git-ignored)
 ├── logs/                Trade journal and run logs
 ├── plans/
 │   └── example_plan.json  Example evaluation plan
 ├── reports/             Evaluation reports (created on first run, git-ignored)
 ├── src/
 │   ├── backtest.py      Historical backtesting engine (separate from paper trading)
+│   ├── data_import/     Offline CSV importer: spec, strict reader, versioned datasets
 │   ├── evaluation.py    Repeatable in-sample / out-of-sample evaluation
 │   ├── main.py          Prints one round of strategy signals (no trades)
 │   ├── market_data/     Market Data Engine
@@ -45,6 +46,8 @@ robinhood-trading-agent/
 │   │   ├── dataset.py       MarketDataSet: validated + labelled candles
 │   │   ├── indicators.py    SMA 20/50, RSI 14, VWAP, average volume
 │   │   ├── sessions.py      New York time, NYSE calendar, regular-session bar grid
+│   │   ├── quality.py       Missing/partial/duplicate/off-grid/interval checks
+│   │   ├── manifest.py      Canonical dataset format + verified ManifestCSVProvider
 │   │   └── providers.py     Provider interface + offline CSV provider
 │   ├── strategy.py      Rules-based BUY / SELL / HOLD with explanations
 │   ├── risk_manager.py  Approves or blocks each trade against the rules
@@ -62,6 +65,8 @@ robinhood-trading-agent/
     ├── test_backtest.py                 Chronology, look-ahead, costs, exits, metrics
     ├── test_evaluation.py               Date splits, reproducibility, benchmark, reports
     ├── test_sessions.py                 Calendar, time zones, DST, session grid
+    ├── test_quality.py                  Missing bars, partial sessions, zero volume
+    ├── test_data_import.py              Import spec, strict parsing, versions, integrity
     ├── market_fixtures.py               Locally generated test candles
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
@@ -234,12 +239,62 @@ timestamp,open,high,low,close,volume
 **Historical is not live.** CSV data is labelled `historical`. Prices in a
 file can be minutes or years old; never treat them as current market quotes.
 
-## Historical data conventions (in progress)
+## Importing historical data (offline)
 
-Historical market data will be imported **offline** from files you obtain
-yourself (no downloader, no API keys, no network access in this project) into
-a separate, git-ignored `historical_data/` folder. The importer is not built
-yet; the time and calendar rules it will enforce are:
+Historical market data is imported **offline** from files you obtain yourself
+(no downloader, no API keys, no network access in this project) into a
+separate, git-ignored `historical_data/` folder:
+
+```
+python -m src.data_import my_spec.json path/to/raw_file.csv [--new-version]
+```
+
+`my_spec.json` must describe the file completely - nothing is defaulted or
+guessed (see `src/data_import/spec.py` for an example): dataset id, symbol,
+source, bar interval, column names, timestamp format, the time zone of the
+timestamps, whether they mark the bar start or end, the price adjustment
+basis, the volume coverage, how the source handles intervals with no trades,
+and whether rows outside regular hours are rejected or explicitly excluded.
+
+What the importer does:
+- reads the raw file once, records its SHA-256, and stores an exact
+  read-only copy in `historical_data/raw/<sha256>/`; the original file is
+  never modified
+- parses strictly: malformed rows, blanks, NaN, ambiguous or non-existent
+  New York times, and timestamps that contradict the spec reject the file
+- checks quality strictly (see below); any finding rejects the import and
+  **nothing is written**
+- writes `historical_data/datasets/<dataset_id>/v<N>/<SYMBOL>.csv` and
+  `manifest.json` through a staging folder and one atomic rename, so a failed
+  import never leaves a partial dataset
+- never overwrites: re-importing identical data reports "unchanged"; different
+  data or metadata is refused unless you pass `--new-version` (a new `v<N+1>`)
+
+**Quality checks (strict).** Missing bars (whole sessions, partial sessions
+that start late or end early, and gaps inside a session), duplicates,
+out-of-order rows, invalid OHLC values, off-grid timestamps, bars outside the
+session or on closed days, and mixed or mismatched bar intervals are all
+rejected. **Absent bars are never treated as "no trades"**: some sources leave
+out intervals without trades, but data can also be lost, and a file alone
+can't tell them apart. Bars that are present with zero volume are kept and
+listed separately. Nothing is interpolated, synthesized or repaired.
+
+**Manifest.** Each version records the source, symbol, interval, timestamp
+convention, time zone, adjustment basis, volume coverage, the source's
+empty-interval policy, the date range, the raw file's SHA-256, the canonical
+CSV's SHA-256, the calendar version, any explicitly excluded rows, and the
+full quality report. Identical inputs and spec give byte-identical CSVs and
+identical manifests except `imported_at` (and the version number, which
+depends on what already exists); `content_fingerprint` covers everything else.
+
+**Reading a dataset.** `ManifestCSVProvider("<dataset_id>")` returns a normal
+`MarketDataSet` after checking the manifest and the CSV's SHA-256 against the
+exact bytes it parses; an edited or damaged dataset is refused.
+
+**Current status:** every calendar year is still unverified, so real imports
+are refused until you verify the years you need (see "Market calendar" below).
+
+The time and calendar rules the importer enforces are:
 
 - **Regular trading hours only:** 09:30-16:00 America/New_York, and the
   official NYSE early closes (13:00).
