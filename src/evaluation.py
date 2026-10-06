@@ -6,8 +6,14 @@ good. It never changes the strategy's thresholds and contains no code that
 searches for "better" parameters.
 
 How it works:
-    1. A small JSON "plan" lists the CSV datasets, an optional date range for
-       each, and a split date.
+    1. A small JSON "plan" lists the datasets, an optional date range for
+       each, and a split date. A dataset is normally an IMPORTED, VERIFIED
+       dataset version ("dataset_id" + "version", see src/data_import); its
+       manifest and SHA-256 are checked before any candle is used, and its
+       identity is carried into every backtest result and the report.
+       Plain CSV folders ("folder" + "symbol") are still accepted only when
+       the plan sets "allow_unverified_csv": true, and every such report is
+       stamped UNVERIFIED_CSV_STAMP.
     2. Each dataset is cut into two periods by calendar date:
            in-sample      = dates BEFORE split_date
            out-of-sample  = dates ON or AFTER split_date
@@ -28,7 +34,8 @@ exist (see OOS_COUNT_NOTES for what this can and cannot detect). Use
 --in-sample-only while exploring.
 
 Reproducible: the report records the plan, every setting, a SHA-256
-fingerprint of each CSV file, and a fingerprint of the evaluation source
+fingerprint of each dataset's data (and, for imported datasets, their full
+identity), and a fingerprint of the evaluation source
 code. The same plan on the same files and code gives the same results; only
 the generation time and the out-of-sample counts (which grow as reports are
 saved) differ between runs.
@@ -53,17 +60,26 @@ from src.backtest import (DISCLAIMER, BacktestConfig, BacktestError,
 from src.market_data import (Candle, CSVHistoricalProvider, DataKind,
                              InsufficientDataError, MarketDataError,
                              MarketDataSet, clean_symbol)
+from src.market_data.manifest import DatasetIdentity, load_verified_market_data
 
 REPORT_KIND = ("EVALUATION - historical backtests of the current strategy "
                "(not live trading, not the paper account)")
 IN_SAMPLE = "in-sample"
 OUT_OF_SAMPLE = "out-of-sample"
 
-PLAN_KEYS = {"name", "datasets", "backtest"}
-DATASET_KEYS = {"symbol", "folder", "start", "end", "split_date"}
+PLAN_KEYS = {"name", "datasets", "backtest", "allow_unverified_csv"}
+DATASET_KEYS = {"symbol", "folder", "start", "end", "split_date", "dataset_id", "version"}
+
+# Printed on every report that uses a plain CSV folder instead of an imported,
+# verified dataset version.
+UNVERIFIED_CSV_STAMP = "UNVERIFIED CSV DATA - not for strategy evaluation"
+VERIFIED = "verified dataset"
+UNVERIFIED_CSV = "unverified CSV"
 
 ASSUMPTIONS = (
-    "Data is historical OHLCV from your own CSV files; nothing is live.",
+    "Data is historical OHLCV from imported datasets whose manifest and SHA-256 "
+    "were verified just before use (or, only where the plan allows it and the "
+    "report is stamped, unverified CSV files); nothing is live.",
     "Strategy thresholds are the current values in config/settings.py; they "
     "are not tuned by this evaluation.",
     "Each period is backtested separately. Up to lookback_candles candles from "
@@ -109,12 +125,14 @@ OOS_COUNT_NOTES = (
     "line always saves) to this exposure log. Evaluations run from Python "
     "without save_report(), and reports saved with a different exposure log, "
     "are not counted.",
-    "A dataset period is matched exactly by symbol, CSV SHA-256 fingerprint, "
-    "split date and end date. The plan name, costs, other datasets in the plan "
+    "A dataset period is matched exactly by symbol, data SHA-256 fingerprint "
+    "(for an imported dataset, the SHA-256 of its canonical CSV), split date "
+    "and end date. The plan name, costs, other datasets in the plan "
     "and the report folder do not affect the count.",
     "It cannot detect looks at overlapping but different periods (another "
-    "split or end date), the same prices in an edited or re-saved CSV (new "
-    "fingerprint), or viewing the data in other ways such as charts.",
+    "split or end date), the same prices in an edited or re-saved CSV or a "
+    "dataset version with different canonical bytes (new fingerprint), or "
+    "viewing the data in other ways such as charts.",
     "Deleting or editing the exposure log changes the count.",
 )
 
@@ -132,33 +150,76 @@ class EvaluationError(ValueError):
 
 @dataclass(frozen=True)
 class DatasetSpec:
-    """One CSV dataset: which symbol, where, which dates, and where to split."""
-    symbol: str
-    folder: str
+    """
+    One dataset: where its data comes from, which dates, and where to split.
+
+    Exactly one of two routes:
+      verified  dataset_id + version (an imported dataset; no folder). The
+                symbol is optional; if given it must match the dataset.
+      CSV       symbol + folder (plain, unverified CSV; no version). Only
+                allowed in a plan with allow_unverified_csv=True.
+    """
+    symbol: str | None
+    folder: str | None
     split_date: date
     start: date | None = None
     end: date | None = None
+    dataset_id: str | None = None
+    version: int | None = None
 
     def __post_init__(self):
-        try:
-            object.__setattr__(self, "symbol", clean_symbol(self.symbol))
-        except MarketDataError as error:
-            raise EvaluationError(str(error)) from None
-        if not isinstance(self.folder, str) or not self.folder.strip():
+        if self.dataset_id is not None:
+            if not _valid_dataset_id(self.dataset_id):
+                raise EvaluationError(
+                    "dataset_id must be 1-64 lowercase letters, digits, '_' or '-' "
+                    f"(got {self.dataset_id!r}).")
+            if self.folder is not None:
+                raise EvaluationError(
+                    f"{self.dataset_id}: give either dataset_id/version or folder, not both.")
+            if (isinstance(self.version, bool) or not isinstance(self.version, int)
+                    or self.version < 1):
+                raise EvaluationError(
+                    f"{self.dataset_id}: version must be a whole number of at least 1 "
+                    f"(got {self.version!r}); 'latest' is not allowed because it would "
+                    "not be reproducible.")
+        else:
+            if self.version is not None:
+                raise EvaluationError("version needs a dataset_id.")
+            if self.symbol is None:
+                raise EvaluationError("A dataset needs a dataset_id and version "
+                                      "(or, for an unverified CSV, a symbol and folder).")
+        if self.symbol is not None:
+            try:
+                object.__setattr__(self, "symbol", clean_symbol(self.symbol))
+            except MarketDataError as error:
+                raise EvaluationError(str(error)) from None
+        if self.dataset_id is None and (not isinstance(self.folder, str)
+                                        or not self.folder.strip()):
             raise EvaluationError(f"{self.symbol}: folder must be a path (got {self.folder!r}).")
         for label in ["split_date", "start", "end"]:
             value = getattr(self, label)
             if value is None and label != "split_date":
                 continue
             if not isinstance(value, date) or isinstance(value, datetime):
-                raise EvaluationError(f"{self.symbol}: {label} must be a date (got {value!r}).")
+                raise EvaluationError(f"{self.label}: {label} must be a date (got {value!r}).")
         if self.start and self.end and self.start > self.end:
-            raise EvaluationError(f"{self.symbol}: start {self.start} is after end {self.end}.")
+            raise EvaluationError(f"{self.label}: start {self.start} is after end {self.end}.")
         if (self.start and self.split_date <= self.start) or \
                 (self.end and self.split_date > self.end):
             raise EvaluationError(
-                f"{self.symbol}: split_date {self.split_date} must fall inside the "
+                f"{self.label}: split_date {self.split_date} must fall inside the "
                 "date range, so that both periods can contain data.")
+
+    @property
+    def verified(self) -> bool:
+        """True for the imported, verified dataset route."""
+        return self.dataset_id is not None
+
+    @property
+    def label(self) -> str:
+        if self.verified:
+            return f"{self.dataset_id} v{self.version}"
+        return self.symbol
 
 
 @dataclass(frozen=True)
@@ -166,6 +227,7 @@ class EvaluationPlan:
     name: str
     datasets: tuple[DatasetSpec, ...]
     backtest: BacktestConfig = BacktestConfig()
+    allow_unverified_csv: bool = False
 
     def __post_init__(self):
         if (not isinstance(self.name, str) or not self.name
@@ -178,11 +240,25 @@ class EvaluationPlan:
             raise EvaluationError("Every dataset must be a DatasetSpec.")
         if not isinstance(self.backtest, BacktestConfig):
             raise EvaluationError("backtest must be a BacktestConfig.")
+        if not isinstance(self.allow_unverified_csv, bool):
+            raise EvaluationError("allow_unverified_csv must be true or false.")
+        unverified = [d.label for d in self.datasets if not d.verified]
+        if unverified and not self.allow_unverified_csv:
+            raise EvaluationError(
+                f"Dataset(s) {', '.join(unverified)} are plain CSV folders, not imported, "
+                "verified datasets. Import them (python -m src.data_import) and use "
+                "dataset_id + version, or set \"allow_unverified_csv\": true to accept "
+                f"reports stamped '{UNVERIFIED_CSV_STAMP}'.")
+
+    @property
+    def uses_unverified_csv(self) -> bool:
+        return any(not d.verified for d in self.datasets)
 
     def to_dict(self) -> dict:
         return {"name": self.name,
                 "datasets": [_spec_dict(d) for d in self.datasets],
-                "backtest": asdict(self.backtest)}
+                "backtest": asdict(self.backtest),
+                "allow_unverified_csv": self.allow_unverified_csv}
 
     def fingerprint(self) -> str:
         """A short code that changes if anything in the plan changes."""
@@ -211,14 +287,30 @@ def plan_from_dict(raw) -> EvaluationPlan:
         unknown = set(item) - DATASET_KEYS
         if unknown:
             raise EvaluationError(f"Dataset {number}: unknown key(s) {', '.join(sorted(unknown))}.")
-        if "symbol" not in item or "split_date" not in item:
-            raise EvaluationError(f"Dataset {number} needs 'symbol' and 'split_date'.")
+        if "split_date" not in item:
+            raise EvaluationError(f"Dataset {number} needs a 'split_date'.")
+        if "dataset_id" in item:
+            if "version" not in item:
+                raise EvaluationError(
+                    f"Dataset {number} needs an explicit 'version' (e.g. 1); 'latest' "
+                    "is not allowed because it would not be reproducible.")
+            if "folder" in item:
+                raise EvaluationError(
+                    f"Dataset {number}: give either dataset_id/version or folder, not both.")
+            source = dict(symbol=item.get("symbol"), folder=None,
+                          dataset_id=item["dataset_id"], version=item["version"])
+        else:
+            if "version" in item:
+                raise EvaluationError(f"Dataset {number}: 'version' needs a 'dataset_id'.")
+            if "symbol" not in item:
+                raise EvaluationError(f"Dataset {number} needs 'dataset_id' and 'version' "
+                                      "(or, for an unverified CSV, 'symbol').")
+            source = dict(symbol=item["symbol"],
+                          folder=item.get("folder", settings.MARKET_DATA_DIR))
         specs.append(DatasetSpec(
-            symbol=item["symbol"],
-            folder=item.get("folder", settings.MARKET_DATA_DIR),
             split_date=_parse_date(item["split_date"], f"dataset {number} split_date"),
             start=_parse_date(item.get("start"), f"dataset {number} start"),
-            end=_parse_date(item.get("end"), f"dataset {number} end")))
+            end=_parse_date(item.get("end"), f"dataset {number} end"), **source))
 
     overrides = raw.get("backtest", {})
     if not isinstance(overrides, dict):
@@ -232,7 +324,10 @@ def plan_from_dict(raw) -> EvaluationPlan:
     except BacktestError as error:
         raise EvaluationError(str(error)) from None
 
-    return EvaluationPlan(raw.get("name", ""), tuple(specs), backtest)
+    allow = raw.get("allow_unverified_csv", False)
+    if not isinstance(allow, bool):
+        raise EvaluationError("allow_unverified_csv must be true or false.")
+    return EvaluationPlan(raw.get("name", ""), tuple(specs), backtest, allow)
 
 
 def load_plan(path: str) -> EvaluationPlan:
@@ -359,6 +454,15 @@ class DatasetResult:
     periods: tuple[PeriodResult, ...]
     oos_key: dict | None = None       # identifies this dataset's out-of-sample period
     prior_oos_evaluations: int | None = None   # earlier SAVED looks at it
+    identity: DatasetIdentity | None = None    # set for verified datasets
+
+    @property
+    def symbol(self) -> str | None:
+        return self.identity.symbol if self.identity is not None else self.spec.symbol
+
+    @property
+    def verification(self) -> str:
+        return VERIFIED if self.spec.verified else UNVERIFIED_CSV
 
     @property
     def oos_evaluated(self) -> bool:
@@ -404,7 +508,14 @@ class EvaluationReport:
             "code_fingerprint": self.code_fingerprint,
             "exposure_log": self.exposure_log,
             "oos_count_notes": list(OOS_COUNT_NOTES),
-            "datasets": [{"symbol": d.spec.symbol, "path": d.path, "sha256": d.sha256,
+            "data_verification": (UNVERIFIED_CSV if self.plan.uses_unverified_csv
+                                  else VERIFIED),
+            "stamp": UNVERIFIED_CSV_STAMP if self.plan.uses_unverified_csv else None,
+            "datasets": [{"symbol": d.symbol, "path": d.path, "sha256": d.sha256,
+                          "verification": d.verification,
+                          "dataset_id": d.spec.dataset_id, "version": d.spec.version,
+                          "dataset_identity": (d.identity.to_dict()
+                                               if d.identity is not None else None),
                           "status": d.status, "error": d.error,
                           "oos_key": d.oos_key,
                           "oos_evaluated": d.oos_evaluated,
@@ -428,6 +539,8 @@ class EvaluationReport:
                  f"Code fingerprint {self.code_fingerprint['combined'][:12]} "
                  "(source files only - not the Python version, installed "
                  "packages or config/settings.py)"]
+        stamp = [UNVERIFIED_CSV_STAMP] if self.plan.uses_unverified_csv else []
+        lines = stamp + lines
         c = self.plan.backtest
         lines.append(f"Costs: commission ${c.commission_per_trade:.2f}/order, slippage "
                      f"{c.slippage_pct * 100:.3f}%; start ${c.starting_capital:,.2f}")
@@ -435,7 +548,15 @@ class EvaluationReport:
             lines.append("Out-of-sample results were NOT evaluated (in-sample-only run).")
 
         for d in self.datasets:
-            lines += ["", f"== {d.spec.symbol}  ({d.path}, sha256 {str(d.sha256)[:12]})"]
+            if d.spec.verified:
+                lines += ["", f"== {d.symbol or '?'}  (verified dataset "
+                              f"{d.spec.dataset_id} v{d.spec.version}, canonical sha256 "
+                              f"{str(d.sha256)[:12]})"]
+                if d.identity is not None:
+                    lines += _identity_lines(d.identity)
+            else:
+                lines += ["", f"== {d.symbol}  ({d.path}, sha256 {str(d.sha256)[:12]})  "
+                              f"{UNVERIFIED_CSV_STAMP}"]
             if d.status != "ok":
                 lines.append(f"   ERROR: {d.error}")
                 continue
@@ -462,7 +583,18 @@ class EvaluationReport:
         lines += ["", "Assumptions:"] + [f"  - {a}" for a in ASSUMPTIONS]
         lines += ["", "Limitations:"] + [f"  - {item}" for item in LIMITATIONS]
         lines += ["", f"NOTE: {DISCLAIMER}"]
-        return "\n".join(lines)
+        return "\n".join(lines + stamp)
+
+
+def _identity_lines(identity: DatasetIdentity) -> list[str]:
+    return [f"   Source: {identity.source}; {identity.interval_minutes}-minute bars, "
+            f"{identity.adjustment}, {identity.volume_coverage} volume, empty bars "
+            f"{identity.empty_bar_policy}",
+            f"   Raw file sha256 {identity.raw_sha256}",
+            f"   Canonical sha256 {identity.canonical_sha256}",
+            f"   Manifest fingerprint {identity.content_fingerprint[:12]}; calendar "
+            f"{identity.calendar_version}; importer v{identity.importer_version}; "
+            f"imported {identity.imported_at}"]
 
 
 def _comparison_table(p: PeriodResult) -> list[str]:
@@ -504,7 +636,8 @@ def _comparison_table(p: PeriodResult) -> list[str]:
 
 def evaluate(plan: EvaluationPlan, *, in_sample_only: bool = False,
              exposure_log: str = settings.OOS_EXPOSURE_LOG,
-             now: datetime | None = None) -> EvaluationReport:
+             now: datetime | None = None,
+             historical_data_dir: str = settings.HISTORICAL_DATA_DIR) -> EvaluationReport:
     """
     Run every dataset and period in the plan. Changes nothing anywhere: it
     only READS the exposure log to count earlier saved out-of-sample looks.
@@ -518,13 +651,14 @@ def evaluate(plan: EvaluationPlan, *, in_sample_only: bool = False,
     log = _read_exposure_log(exposure_log)
     results = []
     for spec in plan.datasets:
-        result = _evaluate_dataset(spec, plan.backtest, config, in_sample_only)
+        result = _evaluate_dataset(spec, plan.backtest, config, in_sample_only,
+                                   historical_data_dir)
         if result.oos_key is not None:
             result = replace(result, prior_oos_evaluations=sum(
                 1 for record in log if _same_oos_key(record, result.oos_key)))
         results.append(result)
     data_fingerprint = _sha256(json.dumps(
-        [[r.spec.symbol, r.sha256] for r in results]).encode())
+        [[r.symbol, r.sha256] for r in results]).encode())
     return EvaluationReport(
         kind=REPORT_KIND, plan=plan, plan_fingerprint=plan.fingerprint(),
         data_fingerprint=data_fingerprint, strategy_name=config.name,
@@ -533,28 +667,49 @@ def evaluate(plan: EvaluationPlan, *, in_sample_only: bool = False,
         exposure_log=exposure_log, datasets=tuple(results))
 
 
-def _evaluate_dataset(spec, backtest_config, strategy_config, in_sample_only):
-    provider = CSVHistoricalProvider(spec.folder)
-    path = provider.path_for(spec.symbol)
-    sha = _file_sha256(path)
-    try:
-        data = provider.get_candles(spec.symbol)
-    except MarketDataError as error:
-        return DatasetResult(spec, path, sha, "error", str(error), ())
+def _evaluate_dataset(spec, backtest_config, strategy_config, in_sample_only,
+                      historical_data_dir=settings.HISTORICAL_DATA_DIR):
+    identity = None
+    if spec.verified:
+        # Only a dataset whose manifest and SHA-256 verify right now is used.
+        path = os.path.join(historical_data_dir, "datasets", spec.dataset_id,
+                            f"v{spec.version}")
+        try:
+            loaded = load_verified_market_data(spec.dataset_id, spec.version,
+                                               historical_data_dir)
+        except MarketDataError as error:
+            return DatasetResult(spec, path, None, "error", str(error), ())
+        identity, data = loaded.identity, loaded.dataset
+        sha = identity.canonical_sha256
+        path = os.path.join(path, f"{identity.symbol}.csv")
+        if spec.symbol is not None and spec.symbol != data.symbol:
+            return DatasetResult(spec, path, sha, "error",
+                                 f"The plan says {spec.symbol}, but dataset {spec.label} "
+                                 f"holds {data.symbol}.", (), identity=identity)
+    else:
+        provider = CSVHistoricalProvider(spec.folder)
+        path = provider.path_for(spec.symbol)
+        sha = _file_sha256(path)
+        try:
+            data = provider.get_candles(spec.symbol)
+        except MarketDataError as error:
+            return DatasetResult(spec, path, sha, "error", str(error), ())
 
     in_sample, out_of_sample = split_candles(data.candles, spec)
-    periods = [_evaluate_period(IN_SAMPLE, in_sample, data, backtest_config, strategy_config)]
+    periods = [_evaluate_period(IN_SAMPLE, in_sample, data, backtest_config, strategy_config,
+                                identity)]
     if in_sample_only:
         periods.append(PeriodResult(OUT_OF_SAMPLE, "not evaluated",
                                     "in-sample-only run; out-of-sample kept unseen"))
     else:
         periods.append(_evaluate_period(OUT_OF_SAMPLE, out_of_sample, data,
-                                        backtest_config, strategy_config))
+                                        backtest_config, strategy_config, identity))
     return DatasetResult(spec, path, sha, "ok", "", tuple(periods),
-                         oos_key=oos_key(spec, sha, data.candles))
+                         oos_key=oos_key(spec, sha, data.candles, data.symbol),
+                         identity=identity)
 
 
-def _evaluate_period(label, candles, data, backtest_config, strategy_config):
+def _evaluate_period(label, candles, data, backtest_config, strategy_config, identity=None):
     if not candles:
         return PeriodResult(label, "skipped", "no candles in this period")
     # Up to lookback_candles EARLIER candles from the same file: indicator
@@ -573,7 +728,14 @@ def _evaluate_period(label, candles, data, backtest_config, strategy_config):
     period_data = MarketDataSet(data.symbol, DataKind.HISTORICAL,
                                 f"{data.source} [{label}]", combined)
     result = run_backtest(period_data, backtest_config, strategy_config=strategy_config,
-                          trade_start=start)
+                          trade_start=start, dataset_identity=identity)
+    # Provenance must survive the backtest unchanged: a verified dataset's
+    # identity can never be dropped or swapped between here and the result.
+    if getattr(result, "dataset_identity", None) != identity:
+        raise EvaluationError(
+            f"{data.symbol} {label}: the backtest result does not carry the dataset "
+            "provenance it was given; refusing to report a result whose data "
+            "cannot be identified.")
     return PeriodResult(label, "ok", candles=len(candles), history_candles=len(history),
                         first_candle=candles[0].timestamp, last_candle=candles[-1].timestamp,
                         strategy=result.metrics,
@@ -582,16 +744,19 @@ def _evaluate_period(label, candles, data, backtest_config, strategy_config):
 
 # --- Out-of-sample exposure tracking -----------------------------------------------------
 
-def oos_key(spec: DatasetSpec, sha256: str | None, candles) -> dict | None:
+def oos_key(spec: DatasetSpec, sha256: str | None, candles,
+            symbol: str | None = None) -> dict | None:
     """
-    Identifies one dataset's out-of-sample period: symbol, CSV fingerprint,
-    split date, and end date (the plan's end, or else the file's last candle
-    date, which is where the out-of-sample period then ends).
+    Identifies one dataset's out-of-sample period: symbol (the data's own
+    symbol when given), data fingerprint, split date, and end date (the
+    plan's end, or else the last candle's date, which is where the
+    out-of-sample period then ends).
     """
-    if sha256 is None or not candles:
+    symbol = symbol or spec.symbol
+    if sha256 is None or not candles or symbol is None:
         return None
     end = spec.end or candles[-1].timestamp.date()
-    return {"symbol": spec.symbol, "sha256": sha256,
+    return {"symbol": symbol, "sha256": sha256,
             "split_date": spec.split_date.isoformat(), "end_date": end.isoformat()}
 
 
@@ -718,8 +883,16 @@ def _parse_date(value, label):
         raise EvaluationError(f"{label} must be a date like 2025-10-01 (got {value!r}).") from None
 
 
+def _valid_dataset_id(value) -> bool:
+    """Same rule as the importer's spec (src/data_import/spec.py)."""
+    return (isinstance(value, str) and 1 <= len(value) <= 64
+            and all(ch in "abcdefghijklmnopqrstuvwxyz0123456789_-" for ch in value)
+            and value[0].isalnum())
+
+
 def _spec_dict(spec: DatasetSpec) -> dict:
     return {"symbol": spec.symbol, "folder": spec.folder,
+            "dataset_id": spec.dataset_id, "version": spec.version,
             "split_date": spec.split_date.isoformat(),
             "start": spec.start.isoformat() if spec.start else None,
             "end": spec.end.isoformat() if spec.end else None}
@@ -758,10 +931,13 @@ def main(argv=None) -> tuple[str, str]:
     parser.add_argument("--reports-dir", default=settings.REPORTS_DIR)
     parser.add_argument("--exposure-log", default=settings.OOS_EXPOSURE_LOG,
                         help="append-only log of saved out-of-sample evaluations")
+    parser.add_argument("--historical-data-dir", default=settings.HISTORICAL_DATA_DIR,
+                        help="folder holding imported datasets (read only)")
     args = parser.parse_args(argv)
 
     report = evaluate(load_plan(args.plan), in_sample_only=args.in_sample_only,
-                      exposure_log=args.exposure_log)
+                      exposure_log=args.exposure_log,
+                      historical_data_dir=args.historical_data_dir)
     paths = save_report(report, args.reports_dir, args.exposure_log)
     print(report.to_text())
     print(f"\nSaved: {paths[0]}\n       {paths[1]}")

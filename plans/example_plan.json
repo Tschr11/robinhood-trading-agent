@@ -1,9 +1,9 @@
 {
   "name": "example_baseline",
   "datasets": [
-    {"symbol": "SPY", "folder": "data/market",
+    {"dataset_id": "spy_5m_split_adjusted", "version": 1, "symbol": "SPY",
      "start": "2025-01-02", "end": "2025-12-31", "split_date": "2025-10-01"},
-    {"symbol": "QQQ", "folder": "data/market",
+    {"dataset_id": "qqq_5m_split_adjusted", "version": 1, "symbol": "QQQ",
      "start": "2025-01-02", "end": "2025-12-31", "split_date": "2025-10-01"}
   ],
   "backtest": {"commission_per_trade": 0.0, "slippage_pct": 0.0005}

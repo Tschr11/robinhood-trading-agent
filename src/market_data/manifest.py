@@ -22,6 +22,14 @@ SHA-256 of the canonical CSV.
 ManifestCSVProvider reads a version READ-ONLY. It checks the manifest and the
 CSV's SHA-256 against the exact bytes it then parses, so a dataset that was
 edited or damaged after import is refused instead of used.
+
+load_verified_market_data() is the route the evaluation uses: it returns the
+verified MarketDataSet together with a DatasetIdentity that records exactly
+which dataset version produced a result.
+
+What the checks can and cannot catch: they detect accidental damage and
+casual edits. A SHA-256 is not a signature - someone deliberately rewriting
+both the CSV and the manifest could make them match again.
 """
 
 import csv
@@ -29,9 +37,11 @@ import hashlib
 import io
 import json
 import os
+from dataclasses import asdict, dataclass
 
 from config import settings
 from src.market_data.candles import Candle, DataKind, MarketDataError
+from src.market_data.dataset import MarketDataSet
 from src.market_data.providers import MarketDataProvider, _parse_cell, clean_symbol
 
 MANIFEST_FORMAT = "historical-dataset/1"
@@ -167,7 +177,83 @@ def load_verified_dataset(dataset_id: str, root: str = settings.HISTORICAL_DATA_
     rows = csv_bytes.count(b"\n") - 1
     if rows != file_info.get("rows"):
         raise DatasetIntegrityError(f"{folder}: row count does not match the manifest.")
+
+    # The manifest must also record that the stage-2 checks passed.
+    quality = manifest["quality"]
+    if not isinstance(quality, dict) or quality.get("accepted") is not True:
+        raise DatasetIntegrityError(
+            f"{folder}: the manifest does not record an accepted quality check.")
+    calendar = manifest["calendar"]
+    years = calendar.get("years_used") if isinstance(calendar, dict) else None
+    verified = calendar.get("verified_years") if isinstance(calendar, dict) else None
+    if (not isinstance(years, list) or not years or not isinstance(verified, list)
+            or not set(years) <= set(verified)):
+        raise DatasetIntegrityError(
+            f"{folder}: the manifest does not record that every calendar year used "
+            "was verified at import.")
     return VerifiedDataset(manifest, csv_bytes, folder)
+
+
+# --- Dataset identity: which exact data produced a result ---------------------------
+
+@dataclass(frozen=True)
+class DatasetIdentity:
+    """Everything needed to identify and re-load the exact data behind a result."""
+    dataset_id: str
+    version: int
+    symbol: str
+    source: str
+    canonical_sha256: str          # SHA-256 of the bytes that were backtested
+    raw_sha256: str                # SHA-256 of the original raw file
+    content_fingerprint: str       # manifest fingerprint (everything but import time)
+    interval_minutes: int
+    adjustment: str
+    volume_coverage: str
+    empty_bar_policy: str
+    calendar_version: str
+    importer_version: str
+    imported_at: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def label(self) -> str:
+        return (f"dataset {self.dataset_id} v{self.version} ({self.symbol}, "
+                f"{self.interval_minutes}-minute, {self.adjustment}, "
+                f"{self.volume_coverage} volume, canonical sha256 "
+                f"{self.canonical_sha256[:12]})")
+
+
+@dataclass(frozen=True)
+class VerifiedMarketData:
+    dataset: MarketDataSet
+    identity: DatasetIdentity
+
+
+def load_verified_market_data(dataset_id: str, version: int,
+                              root: str = settings.HISTORICAL_DATA_DIR) -> VerifiedMarketData:
+    """
+    Load an EXPLICIT dataset version (no "latest"), verify it, and return the
+    candles together with their identity. Raises if anything does not verify.
+    """
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise DatasetIntegrityError(
+            f"A dataset version must be a whole number of at least 1 (got {version!r}); "
+            "'latest' is not allowed because it would not be reproducible.")
+    verified = load_verified_dataset(dataset_id, root, version)
+    m = verified.manifest
+    identity = DatasetIdentity(
+        dataset_id=m["dataset_id"], version=m["version"], symbol=m["symbol"],
+        source=m["source"], canonical_sha256=m["canonical_file"]["sha256"],
+        raw_sha256=m["source_file"]["sha256"],
+        content_fingerprint=m["content_fingerprint"],
+        interval_minutes=m["interval_minutes"], adjustment=m["adjustment"],
+        volume_coverage=m["volume_coverage"], empty_bar_policy=m["empty_bar_policy"],
+        calendar_version=m["calendar"]["version"],
+        importer_version=m["importer_version"], imported_at=m["imported_at"])
+    dataset = MarketDataSet(m["symbol"], DataKind.HISTORICAL, identity.label(),
+                            tuple(verified.candles()))
+    return VerifiedMarketData(dataset, identity)
 
 
 class ManifestCSVProvider(MarketDataProvider):

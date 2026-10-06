@@ -84,7 +84,7 @@ class EvaluationTestCase(unittest.TestCase):
     def plan(self, **dataset_changes):
         spec = dict(symbol="SPY", folder=self.market, split_date=SPLIT.isoformat())
         spec.update(dataset_changes)
-        return plan_from_dict({"name": "test_plan", "datasets": [spec]})
+        return plan_from_dict({"allow_unverified_csv": True, "name": "test_plan", "datasets": [spec]})
 
     def run_eval(self, plan=None, **kwargs):
         kwargs.setdefault("exposure_log", self.log)
@@ -95,7 +95,7 @@ class EvaluationTestCase(unittest.TestCase):
 # --- Plans --------------------------------------------------------------------------------
 
 class PlanTests(unittest.TestCase):
-    base = {"name": "p1", "datasets": [{"symbol": "spy", "split_date": "2026-01-07"}]}
+    base = {"allow_unverified_csv": True, "name": "p1", "datasets": [{"symbol": "spy", "split_date": "2026-01-07"}]}
 
     def with_changes(self, top=None, dataset=None):
         raw = json.loads(json.dumps(self.base))
@@ -163,6 +163,9 @@ class PlanTests(unittest.TestCase):
     def test_example_plan_in_repository_is_valid(self):
         plan = load_plan("plans/example_plan.json")
         self.assertEqual([d.symbol for d in plan.datasets], ["SPY", "QQQ"])
+        # The example uses the verified route only, with explicit versions.
+        self.assertTrue(all(d.verified and d.version == 1 for d in plan.datasets))
+        self.assertFalse(plan.allow_unverified_csv)
 
     def test_plan_fingerprint_is_stable_and_sensitive(self):
         a = plan_from_dict(self.base)
@@ -240,7 +243,7 @@ class DateSeparationTests(EvaluationTestCase):
     def test_too_short_period_is_skipped_with_reason(self):
         # In-sample is day 1 only (78 candles) with no earlier history, but 80
         # warm-up candles are required. Out-of-sample can borrow day 1 as history.
-        report = self.run_eval(plan_from_dict({"name": "short", "datasets": [{
+        report = self.run_eval(plan_from_dict({"allow_unverified_csv": True, "name": "short", "datasets": [{
             "symbol": "SPY", "folder": self.market, "split_date": "2026-01-06"}],
             "backtest": {"warmup_candles": 80, "lookback_candles": 500}}))
         in_s, out_s = report.datasets[0].periods
@@ -255,7 +258,7 @@ class DateSeparationTests(EvaluationTestCase):
         with open(os.path.join(self.tmp.name, "bad", "QQQ.csv"), "w") as f:
             f.write("timestamp,open,high,low,close,volume\n"
                     "2026-01-05T09:30:00-05:00,100,99,98,100,1000\n")       # high < open
-        plan = plan_from_dict({"name": "mixed", "datasets": [
+        plan = plan_from_dict({"allow_unverified_csv": True, "name": "mixed", "datasets": [
             {"symbol": "QQQ", "folder": os.path.join(self.tmp.name, "bad"),
              "split_date": "2026-01-07"},
             {"symbol": "IWM", "folder": self.market, "split_date": "2026-01-07"},
@@ -472,7 +475,12 @@ class ReportTests(EvaluationTestCase):
             self.assertIn(key, period["benchmark"])
         for label in self.REQUIRED + ["Assumptions:", "Limitations:", DISCLAIMER]:
             self.assertIn(label, text)
-        self.assertTrue(text.startswith("EVALUATION - historical backtests"))
+        # A plain-CSV plan: the report is stamped first and last, in both files.
+        self.assertTrue(text.startswith(evaluation.UNVERIFIED_CSV_STAMP
+                                        + "\nEVALUATION - historical backtests"))
+        self.assertTrue(text.rstrip().endswith(evaluation.UNVERIFIED_CSV_STAMP))
+        self.assertEqual(record["stamp"], evaluation.UNVERIFIED_CSV_STAMP)
+        self.assertEqual(record["data_verification"], "unverified CSV")
 
     def test_report_numbers_match_the_backtest(self):
         report = self.run_eval()
@@ -546,7 +554,7 @@ class ReportTests(EvaluationTestCase):
     def test_command_line_runs_a_plan(self):
         plan_path = os.path.join(self.tmp.name, "plan.json")
         with open(plan_path, "w") as f:
-            json.dump({"name": "cli", "datasets": [
+            json.dump({"allow_unverified_csv": True, "name": "cli", "datasets": [
                 {"symbol": "SPY", "folder": self.market, "split_date": "2026-01-07"}]}, f)
         with mock.patch("builtins.print"):
             json_path, txt_path = evaluation.main(
@@ -584,13 +592,13 @@ class ExposureTrackingTests(EvaluationTestCase):
 
     def test_count_survives_name_cost_dataset_and_folder_changes(self):
         self.save(self.run_eval())
-        renamed = plan_from_dict({"name": "renamed", "datasets": [
+        renamed = plan_from_dict({"allow_unverified_csv": True, "name": "renamed", "datasets": [
             {"symbol": "SPY", "folder": self.market, "split_date": "2026-01-07"}]})
-        costly = plan_from_dict({"name": "test_plan", "datasets": [
+        costly = plan_from_dict({"allow_unverified_csv": True, "name": "test_plan", "datasets": [
             {"symbol": "SPY", "folder": self.market, "split_date": "2026-01-07"}],
             "backtest": {"commission_per_trade": 0.01}})
         write_csv(self.market, "QQQ", self.candles[::-1][::-1])
-        bigger = plan_from_dict({"name": "test_plan", "datasets": [
+        bigger = plan_from_dict({"allow_unverified_csv": True, "name": "test_plan", "datasets": [
             {"symbol": "SPY", "folder": self.market, "split_date": "2026-01-07"},
             {"symbol": "QQQ", "folder": self.market, "split_date": "2026-01-07"}]})
         explicit_end = self.plan(end="2026-01-08")       # same period, end spelled out
@@ -626,7 +634,7 @@ class ExposureTrackingTests(EvaluationTestCase):
         self.assertEqual(self.count(report), 1)
 
     def test_skipped_or_failed_datasets_are_not_logged(self):
-        plan = plan_from_dict({"name": "skips", "datasets": [
+        plan = plan_from_dict({"allow_unverified_csv": True, "name": "skips", "datasets": [
             {"symbol": "SPY", "folder": self.market, "split_date": "2026-01-08"},
             {"symbol": "IWM", "folder": self.market, "split_date": "2026-01-07"}],
             "backtest": {"warmup_candles": 400, "lookback_candles": 500}})
@@ -713,7 +721,7 @@ class EvaluationWarmupTests(EvaluationTestCase):
         self.assertEqual(out_s.benchmark.entry_time, oos[1].timestamp)
 
     def test_history_is_limited_to_the_lookback(self):
-        plan = plan_from_dict({"name": "short_lookback", "datasets": [
+        plan = plan_from_dict({"allow_unverified_csv": True, "name": "short_lookback", "datasets": [
             {"symbol": "SPY", "folder": self.market, "split_date": "2026-01-07"}],
             "backtest": {"lookback_candles": 100, "warmup_candles": 50}})
         self.assertEqual(self.run_eval(plan).datasets[0].periods[1].history_candles, 100)
@@ -756,7 +764,7 @@ class BenchmarkAlignmentTests(unittest.TestCase):
 
     def test_warmup_below_50_cannot_misalign_the_benchmark(self):
         with self.assertRaises(EvaluationError):
-            plan_from_dict({"name": "p", "datasets": [
+            plan_from_dict({"allow_unverified_csv": True, "name": "p", "datasets": [
                 {"symbol": "SPY", "split_date": "2026-01-07"}],
                 "backtest": {"warmup_candles": 10}})
         # Even a config that bypassed validation enters at candle 50, not 10.

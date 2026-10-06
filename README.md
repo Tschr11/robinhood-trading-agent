@@ -47,7 +47,7 @@ robinhood-trading-agent/
 │   │   ├── indicators.py    SMA 20/50, RSI 14, VWAP, average volume
 │   │   ├── sessions.py      New York time, NYSE calendar, regular-session bar grid
 │   │   ├── quality.py       Missing/partial/duplicate/off-grid/interval checks
-│   │   ├── manifest.py      Canonical dataset format + verified ManifestCSVProvider
+│   │   ├── manifest.py      Canonical dataset format, verified loading, DatasetIdentity
 │   │   └── providers.py     Provider interface + offline CSV provider
 │   ├── strategy.py      Rules-based BUY / SELL / HOLD with explanations
 │   ├── risk_manager.py  Approves or blocks each trade against the rules
@@ -67,6 +67,7 @@ robinhood-trading-agent/
     ├── test_sessions.py                 Calendar, time zones, DST, session grid
     ├── test_quality.py                  Missing bars, partial sessions, zero volume
     ├── test_data_import.py              Import spec, strict parsing, versions, integrity
+    ├── test_verified_pipeline.py        Import -> evaluation -> backtest, provenance
     ├── market_fixtures.py               Locally generated test candles
     └── test_no_brokerage_access.py      Proves the code cannot reach a broker
 ```
@@ -290,6 +291,18 @@ depends on what already exists); `content_fingerprint` covers everything else.
 **Reading a dataset.** `ManifestCSVProvider("<dataset_id>")` returns a normal
 `MarketDataSet` after checking the manifest and the CSV's SHA-256 against the
 exact bytes it parses; an edited or damaged dataset is refused.
+`load_verified_market_data("<dataset_id>", <version>)` is what the evaluation
+uses: it needs an explicit version (no "latest"), also refuses a manifest that
+does not record an accepted quality check or a verified calendar for every
+year used, and returns the candles together with a `DatasetIdentity` (dataset
+id and version, symbol, source, raw and canonical SHA-256, manifest
+fingerprint, interval, adjustment, volume coverage, empty-bar policy, calendar
+and importer versions, import time).
+
+What these checks can and cannot catch: they detect accidental damage and
+casual edits after import. A SHA-256 is not a signature - someone who
+deliberately rewrites both the CSV and the manifest (recomputing the hashes)
+can make them match again.
 
 **Current status:** every calendar year is still unverified, so real imports
 are refused until you verify the years you need (see "Market calendar" below).
@@ -463,19 +476,41 @@ python -m src.evaluation plans/example_plan.json --in-sample-only
 python -m src.evaluation plans/example_plan.json
 ```
 
-A plan lists datasets (one CSV per symbol and folder), optional date ranges,
-a split date, and optional backtest *assumptions* such as costs:
+A plan lists datasets, optional date ranges, a split date, and optional
+backtest *assumptions* such as costs. Each dataset is an **imported, verified
+dataset version** (see "Importing historical data" above):
 
 ```json
 {
   "name": "example_baseline",
   "datasets": [
-    {"symbol": "SPY", "folder": "data/market",
+    {"dataset_id": "spy_5m_split_adjusted", "version": 1, "symbol": "SPY",
      "start": "2025-01-02", "end": "2025-12-31", "split_date": "2025-10-01"}
   ],
   "backtest": {"commission_per_trade": 0.0, "slippage_pct": 0.0005}
 }
 ```
+
+`version` is required ("latest" is not allowed, so a plan always means the
+same data). `symbol` is optional; if given it must match the dataset. Use
+`--historical-data-dir` if your datasets are not in `historical_data/`.
+
+The pipeline is: raw file -> importer (strict checks) -> canonical,
+immutable dataset version -> verified again (manifest + SHA-256) right
+before the evaluation uses it -> backtests -> report. A dataset that no
+longer verifies is reported as an error and is never backtested. The
+dataset's `DatasetIdentity` is passed into every `run_backtest()` call and
+kept on every `BacktestResult`; the evaluation refuses to continue if a
+result comes back without exactly that identity. Reports show the identity
+for every verified dataset.
+
+**Plain CSV folders (unverified).** The older form
+`{"symbol": "SPY", "folder": "data/market", ...}` reads a CSV without any
+import checks. It is only accepted if the plan also sets
+`"allow_unverified_csv": true`; otherwise the plan is rejected. Every report
+from such a plan is stamped, at the top and bottom of the text report, on each
+such dataset, and in the JSON: **UNVERIFIED CSV DATA - not for strategy
+evaluation**.
 
 **In-sample vs. out-of-sample.** Each dataset is cut to `[start, end]`
 (inclusive calendar dates). Dates **before** `split_date` are in-sample;
@@ -500,8 +535,9 @@ out-of-sample period adds a line to an append-only exposure log,
 `reports/oos_exposure_log.jsonl` (`--exposure-log` to change it). Each report
 shows, per dataset, how many earlier **saved** out-of-sample evaluations of
 that exact dataset period exist. A dataset period is identified by its
-symbol, the SHA-256 fingerprint of the CSV file, the split date and the end
-date (the plan's `end`, or the file's last candle date).
+symbol, the SHA-256 fingerprint of the data (for an imported dataset, its
+canonical CSV - so a new version with identical candles shares the count),
+the split date and the end date (the plan's `end`, or the last candle date).
 
 What the count **can** detect: repeated saved evaluations of the same dataset
 period, even if the plan is renamed, costs change, other datasets are added,

@@ -40,7 +40,7 @@ Run it on your CSV files with:
 """
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
 from config import settings
@@ -49,6 +49,7 @@ from src.market_data import (MIN_CANDLES_FOR_INDICATORS, Candle,
                              CSVHistoricalProvider, DataKind,
                              InsufficientDataError, MarketDataError,
                              MarketDataSet)
+from src.market_data.manifest import DatasetIdentity
 from src.risk_manager import AccountState, RiskManager, TradeRequest
 from src.strategy import Signal, StrategyConfig
 
@@ -250,6 +251,9 @@ class BacktestResult:
     rejected_entries: tuple[tuple[datetime, str], ...]   # (time, why)
     expired_orders: tuple[tuple[datetime, str, str], ...]  # (time, signal, why)
     disclaimer: str = DISCLAIMER
+    # Which imported, verified dataset version produced this result. None
+    # means the candles did NOT come from a verified dataset.
+    dataset_identity: DatasetIdentity | None = None
 
     def report(self) -> str:
         m, c = self.metrics, self.config
@@ -296,6 +300,15 @@ class BacktestResult:
                     f"    {t.entry_time.isoformat()} buy {t.shares:g} @ {t.entry_price:.4f}"
                     f" -> {t.exit_time.isoformat()} sell @ {t.exit_price:.4f}"
                     f"  P&L {t.realized_pnl:+.4f}  [{t.exit_reason}]")
+        if self.dataset_identity is not None:
+            i = self.dataset_identity
+            lines += ["", f"Data: verified {i.label()}",
+                      f"  canonical sha256 {i.canonical_sha256}",
+                      f"  raw sha256 {i.raw_sha256}, content fingerprint "
+                      f"{i.content_fingerprint[:12]}, source: {i.source}"]
+        else:
+            lines += ["", "Data: no dataset provenance recorded - these candles did "
+                          "not come from an imported, verified dataset."]
         lines += ["", f"NOTE: {self.disclaimer}"]
         return "\n".join(lines)
 
@@ -325,12 +338,17 @@ def first_tradable_index(candles, warmup_candles: int, trade_start: datetime | N
 
 def run_backtest(dataset: MarketDataSet, config: BacktestConfig = DEFAULT_CONFIG,
                  strategy_config: StrategyConfig = strategy.DEFAULT_CONFIG,
-                 strategy_fn=None, trade_start: datetime | None = None) -> BacktestResult:
+                 strategy_fn=None, trade_start: datetime | None = None,
+                 dataset_identity: DatasetIdentity | None = None) -> BacktestResult:
     """
     Replay `dataset` (HISTORICAL candles, oldest first) through the strategy.
 
     trade_start  optional: candles before this time are indicator history
                  only - never traded, never in the equity curve or metrics.
+
+    dataset_identity  the DatasetIdentity of the verified dataset these candles
+                 came from (see market_data.manifest.load_verified_market_data).
+                 It is copied unchanged into the result. Its symbol must match.
 
     strategy_fn  optional replacement for strategy.evaluate - mainly for
                  tests. It is called exactly like strategy.evaluate and must
@@ -360,7 +378,14 @@ def run_backtest(dataset: MarketDataSet, config: BacktestConfig = DEFAULT_CONFIG
     else:
         name = getattr(strategy_fn, "name", "custom")
 
-    return _Simulation(dataset, config, strategy_fn, name, trade_start).run()
+    if dataset_identity is not None:
+        if not isinstance(dataset_identity, DatasetIdentity):
+            raise BacktestError("dataset_identity must be a DatasetIdentity.")
+        if dataset_identity.symbol != dataset.symbol:
+            raise BacktestError(f"dataset_identity is for {dataset_identity.symbol}, but "
+                                f"the candles are {dataset.symbol}.")
+    result = _Simulation(dataset, config, strategy_fn, name, trade_start).run()
+    return replace(result, dataset_identity=dataset_identity)
 
 
 @dataclass
