@@ -331,7 +331,10 @@ from search excerpts of the official documents (the documents could not be
 opened from the build environment). **Unverified years are refused** unless a
 caller explicitly passes `allow_unverified=True`. To verify a year: open the
 links in its `sources`, compare every holiday, closure and early close, then
-set `"verified": true`, `"verified_by"` and `"verified_on"`.
+set `"verified": true`, `"verified_by"`, `"verified_on"`, and add at least
+one `"evidence"` entry saying how the year was checked (for example which
+official documents were compared). A verified year without evidence is
+refused as invalid.
 
 ## Your saved paper account
 

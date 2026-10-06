@@ -30,7 +30,16 @@ def verified_data(data=None):
     """A copy of the calendar data with every year marked verified."""
     data = copy.deepcopy(data or REAL_DATA)
     for entry in data["years"].values():
-        entry.update(verified=True, verified_by="test", verified_on="2026-10-02")
+        entry.update(verified=True, verified_by="test", verified_on="2026-10-02",
+                     evidence=["test fixture - not a real verification"])
+    return data
+
+
+def unverified_data(data=None):
+    """A copy of the calendar data with every year marked NOT verified."""
+    data = copy.deepcopy(data or REAL_DATA)
+    for entry in data["years"].values():
+        entry.update(verified=False, verified_by=None, verified_on=None, evidence=[])
     return data
 
 
@@ -58,9 +67,18 @@ class CalendarFileTests(unittest.TestCase):
                 self.assertTrue(all(s.startswith(("https://ir.theice.com/",
                                                   "https://www.nyse.com/"))
                                     for s in entry["sources"]))
+                self.assertIsInstance(entry["evidence"], list)
                 if entry["verified"]:
                     self.assertTrue(entry["verified_by"])
                     self.assertTrue(entry["verified_on"])
+                    self.assertTrue(entry["evidence"])
+                    # A real verification is never recorded under a placeholder name.
+                    self.assertNotIn(entry["verified_by"].strip().lower(),
+                                     {"test", "claude", "ai", "assistant", "me"})
+                else:
+                    self.assertIsNone(entry["verified_by"])
+                    self.assertIsNone(entry["verified_on"])
+                    self.assertEqual(entry["evidence"], [])
 
     def test_known_closures_and_early_closes(self):
         closed = [date(2023, 1, 2), date(2023, 4, 7), date(2024, 3, 29), date(2024, 6, 19),
@@ -90,19 +108,29 @@ class CalendarFileTests(unittest.TestCase):
 
 class CoverageTests(unittest.TestCase):
     def test_unverified_years_are_refused_by_default(self):
-        cal = TradingCalendar(REAL_DATA)               # real file: years unverified
+        cal = TradingCalendar(unverified_data())
         with self.assertRaises(CalendarError) as caught:
             cal.session(date(2025, 1, 6))
         self.assertIn("has not been verified", str(caught.exception))
         self.assertIn("official NYSE documents", str(caught.exception))
 
+    def test_real_calendar_refuses_its_unverified_years(self):
+        cal = load_calendar()
+        unverified = [int(y) for y, e in REAL_DATA["years"].items() if not e["verified"]]
+        self.assertTrue(unverified)
+        for year in unverified:
+            with self.subTest(year=year):
+                with self.assertRaises(CalendarError):
+                    cal.sessions_between(date(year, 1, 1), date(year, 12, 31))
+
     def test_unverified_years_can_be_used_only_when_explicitly_allowed(self):
-        cal = TradingCalendar(REAL_DATA, allow_unverified=True)
+        cal = TradingCalendar(unverified_data(), allow_unverified=True)
         self.assertIsNotNone(cal.session(date(2025, 1, 6)))
 
     def test_a_verified_year_needs_no_override(self):
-        data = copy.deepcopy(REAL_DATA)
-        data["years"]["2025"].update(verified=True, verified_by="me", verified_on="2026-10-02")
+        data = unverified_data()
+        data["years"]["2025"].update(verified=True, verified_by="me", verified_on="2026-10-02",
+                                     evidence=["checked against the 2025 PDF"])
         cal = TradingCalendar(data)
         self.assertEqual(cal.verified_years, (2025,))
         self.assertIsNotNone(cal.session(date(2025, 1, 6)))
@@ -163,6 +191,11 @@ class CalendarDataValidationTests(unittest.TestCase):
             "verified without who": lambda d: y(d).update(verified_by=None),
             "verified without when": lambda d: y(d).update(verified_on="yesterday"),
             "verified not a bool": lambda d: y(d).update(verified="yes"),
+            "verified without evidence": lambda d: y(d).update(evidence=[]),
+            "evidence not a list": lambda d: y(d).update(evidence="checked"),
+            "blank evidence": lambda d: y(d).update(evidence=["  "]),
+            "evidence not text": lambda d: y(d).update(evidence=[1]),
+            "missing evidence key": lambda d: y(d).pop("evidence"),
             "no sources": lambda d: y(d).update(sources=[]),
             "insecure source": lambda d: y(d).update(sources=["http://example.com"]),
             "holiday missing name": lambda d: y(d)["holidays"].append({"date": "2025-03-03"}),

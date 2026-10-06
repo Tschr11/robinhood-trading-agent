@@ -37,7 +37,7 @@ SUPPORTED_INTERVALS = (1, 5, 15, 30)
 
 _TOP_KEYS = {"calendar", "description", "version", "timezone", "regular_session",
              "verification_instructions", "years"}
-_YEAR_KEYS = {"verified", "verified_by", "verified_on", "sources", "holidays",
+_YEAR_KEYS = {"verified", "verified_by", "verified_on", "evidence", "sources", "holidays",
               "special_closures", "early_closes"}
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
@@ -68,6 +68,7 @@ class YearCalendar:
     verified: bool
     verified_by: str | None
     verified_on: str | None
+    evidence: tuple[str, ...]      # how the year was checked (required once verified)
     sources: tuple[str, ...]
     holidays: dict                 # date -> name
     special_closures: dict         # date -> name (unscheduled full-day closures)
@@ -147,8 +148,8 @@ class TradingCalendar:
             raise CalendarError(
                 f"{year} in market calendar version {self.version} has not been "
                 "verified against the official NYSE documents listed in its "
-                "'sources'. Check it, then set \"verified\": true with verified_by "
-                "and verified_on.")
+                "'sources'. Check it, then set \"verified\": true with verified_by, "
+                "verified_on and an evidence entry.")
         return entry
 
     # -- Trading days -------------------------------------------------------------------
@@ -321,6 +322,13 @@ def _parse_year(label, entry):
             problems.append(f"{year}: verified years need verified_by")
         if _parse_iso_date(entry["verified_on"]) is None:
             problems.append(f"{year}: verified years need verified_on as YYYY-MM-DD")
+    evidence = entry["evidence"]
+    if (not isinstance(evidence, list)
+            or not all(isinstance(e, str) and e.strip() for e in evidence)):
+        problems.append(f"{year}: evidence must be a list of non-empty text")
+        evidence = []
+    elif verified is True and not evidence:
+        problems.append(f"{year}: verified years need at least one evidence entry")
     sources = entry["sources"]
     if (not isinstance(sources, list) or not sources
             or not all(isinstance(s, str) and s.startswith("https://") for s in sources)):
@@ -348,7 +356,7 @@ def _parse_year(label, entry):
     if problems:
         return problems, None
     return [], YearCalendar(year, verified, entry["verified_by"], entry["verified_on"],
-                            tuple(sources), holidays, special, early)
+                            tuple(evidence), tuple(sources), holidays, special, early)
 
 
 def _parse_days(year, field, items, seen, problems) -> dict:

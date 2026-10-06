@@ -1,15 +1,16 @@
 {
   "calendar": "XNYS",
   "description": "NYSE regular-trading-hours calendar for US equities. Only the years listed are covered; any other year is refused, never assumed to be a normal year.",
-  "version": "2026-10-02.1",
+  "version": "2026-10-06.1",
   "timezone": "America/New_York",
   "regular_session": {"open": "09:30", "close": "16:00"},
-  "verification_instructions": "Each year is 'verified': false until a person compares it with the official NYSE/ICE documents listed in its 'sources' and sets 'verified' to true (and fills 'verified_by' and 'verified_on'). The dates below were transcribed from search-engine excerpts of those official documents; the documents themselves could not be opened from the build environment. Unverified years are refused unless allow_unverified=True is passed explicitly.",
+  "verification_instructions": "Each year is 'verified': false until a person compares it with the official NYSE/ICE documents listed in its 'sources' and sets 'verified' to true (and fills 'verified_by', 'verified_on' and at least one 'evidence' entry describing how the year was checked). The dates below were transcribed from search-engine excerpts of those official documents; the documents themselves could not be opened from the build environment. Unverified years are refused unless allow_unverified=True is passed explicitly.",
   "years": {
     "2023": {
       "verified": false,
       "verified_by": null,
       "verified_on": null,
+      "evidence": [],
       "sources": [
         "https://ir.theice.com/press/news-details/2022/NYSE-Group-Announces-2023-2024-and-2025-Holiday-and-Early-Closings-Calendar/default.aspx",
         "https://www.nyse.com/publicdocs/ICE_NYSE_2023_Yearly_Trading_Calendar.pdf"
@@ -36,6 +37,7 @@
       "verified": false,
       "verified_by": null,
       "verified_on": null,
+      "evidence": [],
       "sources": [
         "https://ir.theice.com/press/news-details/2023/NYSE-Group-Announces-2024-2025-and-2026-Holiday-and-Early-Closings-Calendar/default.aspx",
         "https://www.nyse.com/publicdocs/ICE_NYSE_2024_Yearly_Trading_Calendar.pdf"
@@ -63,6 +65,7 @@
       "verified": false,
       "verified_by": null,
       "verified_on": null,
+      "evidence": [],
       "sources": [
         "https://ir.theice.com/press/news-details/2024/NYSE-Group-Announces-2025-2026-and-2027-Holiday-and-Early-Closings-Calendar/default.aspx",
         "https://www.nyse.com/publicdocs/ICE_NYSE_2025_Yearly_Trading_Calendar.pdf",
@@ -93,6 +96,7 @@
       "verified": false,
       "verified_by": null,
       "verified_on": null,
+      "evidence": [],
       "sources": [
         "https://ir.theice.com/press/news-details/2025/NYSE-Group-Announces-2026-2027-and-2028-Holiday-and-Early-Closings-Calendar/default.aspx",
         "https://www.nyse.com/publicdocs/nyse/ICE_NYSE_2026_Yearly_Trading_Calendar.pdf"
